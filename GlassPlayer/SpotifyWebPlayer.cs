@@ -1,3 +1,4 @@
+// Modified 2026-10-26 by N3moStudio: native ARM64, performance, Spotify integration and packaging. Original work by Jonzu00; GPL-3.0.
 using System;
 using System.IO;
 using System.Text.Json;
@@ -17,7 +18,7 @@ class WebPlayer
 {
     readonly WebView2 web;
     readonly Spotify sp;
-    readonly TaskCompletionSource<string> ready = new();
+    TaskCompletionSource<string> ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
     bool started;
     WebState? last;
     string? deviceId;
@@ -37,7 +38,8 @@ class WebPlayer
             var env = await CoreWebView2Environment.CreateAsync(null, Path.Combine(root, "webview"),
                 new CoreWebView2EnvironmentOptions("--autoplay-policy=no-user-gesture-required"));
             await web.EnsureCoreWebView2Async(env);
-            web.CoreWebView2.SetVirtualHostNameToFolderMapping("glass.local", site, CoreWebView2HostResourceAccessKind.Allow);
+            web.CoreWebView2.SetVirtualHostNameToFolderMapping("glass.local", site, CoreWebView2HostResourceAccessKind.DenyCors);
+            web.CoreWebView2.WebMessageReceived -= OnMessage;
             web.CoreWebView2.WebMessageReceived += OnMessage;
             web.CoreWebView2.Navigate("https://glass.local/player.html");
         }
@@ -46,16 +48,19 @@ class WebPlayer
 
     public async Task<string?> WaitReadyAsync(TimeSpan timeout)
     {
+        if (ready.Task.IsFaulted || ready.Task.IsCanceled) Disconnect();
         await StartAsync();
-        var done = await Task.WhenAny(ready.Task, Task.Delay(timeout));
-        if (done != ready.Task || ready.Task.IsFaulted) return null;
-        return deviceId;
+        var pending = ready.Task;
+        var done = await Task.WhenAny(pending, Task.Delay(timeout));
+        if (done != pending || !pending.IsCompletedSuccessfully) return null;
+        return pending.Result;
     }
 
     async void OnMessage(object? s, CoreWebView2WebMessageReceivedEventArgs e)
     {
         try
         {
+            if (e.Source != "https://glass.local/player.html") return;
             using var doc = JsonDocument.Parse(e.TryGetWebMessageAsString());
             var m = doc.RootElement;
             switch (m.GetProperty("type").GetString())
@@ -83,6 +88,20 @@ class WebPlayer
     public async Task CallAsync(string js)
     {
         if (web.CoreWebView2 != null) await web.CoreWebView2.ExecuteScriptAsync("player." + js);
+    }
+
+    public void Disconnect()
+    {
+        if (web.CoreWebView2 != null)
+        {
+            web.CoreWebView2.WebMessageReceived -= OnMessage;
+            web.CoreWebView2.Navigate("about:blank");
+        }
+        started = false;
+        deviceId = null;
+        last = null;
+        ready.TrySetCanceled();
+        ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 
     public void ClearState() => last = null;

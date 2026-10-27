@@ -1,4 +1,6 @@
+// Modified 2026-10-26 by N3moStudio: native ARM64, performance, Spotify integration and packaging. Original work by Jonzu00; GPL-3.0.
 using System.Text.RegularExpressions;
+using System.Runtime.InteropServices;
 using System.Globalization;
 using System;
 using System.Collections.Generic;
@@ -80,24 +82,31 @@ static class Dlp
 {
     static readonly HttpClient Http = new();
     static readonly string Dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GlassPlayer", "tools");
-    static readonly string Exe = Path.Combine(Dir, "yt-dlp.exe");
+    static readonly string Asset = RuntimeInformation.OSArchitecture == Architecture.Arm64 ? "yt-dlp_arm64.exe" : "yt-dlp.exe";
+    static readonly string Exe = Path.Combine(Dir, Asset);
+    static readonly SemaphoreSlim SetupGate = new(1, 1);
     static bool ready;
 
     public static async Task EnsureAsync()
     {
-        if (ready) return;
-        if (!File.Exists(Exe))
+        await SetupGate.WaitAsync();
+        try
         {
+            if (ready) return;
             Directory.CreateDirectory(Dir);
-            var bytes = await Http.GetByteArrayAsync("https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe");
-            await File.WriteAllBytesAsync(Exe, bytes);
+            if (!File.Exists(Exe))
+            {
+                var bytes = await Http.GetByteArrayAsync("https://github.com/yt-dlp/yt-dlp/releases/latest/download/" + Asset);
+                await File.WriteAllBytesAsync(Exe + ".download", bytes);
+                File.Move(Exe + ".download", Exe, true);
+            }
+            else if ((DateTime.UtcNow - File.GetLastWriteTimeUtc(Exe)).TotalDays > 5)
+            {
+                try { await RunAsync("-U"); File.SetLastWriteTimeUtc(Exe, DateTime.UtcNow); } catch { }
+            }
+            ready = true;
         }
-        else if ((DateTime.UtcNow - File.GetLastWriteTimeUtc(Exe)).TotalDays > 5)
-        {
-            try { await RunAsync("-U"); } catch { }
-            File.SetLastWriteTimeUtc(Exe, DateTime.UtcNow);
-        }
-        ready = true;
+        finally { SetupGate.Release(); }
     }
 
     public static async Task<string> RunAsync(string args, bool allowPartial = false)
@@ -361,266 +370,6 @@ class YouTubeMusic : IProvider
     // Downloads the audio to the cache and returns the local file path.
     public Task<string?> ResolveAsync(Track t)
         => Dlp.DownloadAsync($"https://music.youtube.com/watch?v={t.Id}", "yt" + t.Id).ContinueWith(x => (string?)x.Result);
-}
-
-/// <summary>
-/// Spotify Premium: signs in once with PKCE (no secret needed), then controls the Spotify app on this PC through the Web API.
-/// </summary>
-class Spotify : IProvider
-{
-    static readonly HttpClient Http = new();
-    const string Redirect = "http://127.0.0.1:5543/callback";
-    const string Scopes = "streaming user-read-email user-read-private user-read-playback-state user-modify-playback-state";
-    static readonly string Store = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "GlassPlayer", "spotify-v3.bin");
-
-    readonly string? id = Config.Get("SPOTIFY_CLIENT_ID");
-    string? access, refresh; DateTime expires;
-
-    public string Name => "Spotify";
-    public bool Enabled => id != null;
-    public static bool AutoLaunch = true;
-    public WebPlayer? Web;   // built-in "Glass" Spotify device
-    bool UseWeb;
-    public Task<string> GetTokenAsync() => TokenAsync();
-    public bool SignedIn => refresh != null || File.Exists(Store);
-
-    // ---- sign-in ----
-    static string B64(byte[] b) => Convert.ToBase64String(b).TrimEnd('=').Replace('+', '-').Replace('/', '_');
-
-    string? LoadRefresh()
-    {
-        try { return Encoding.UTF8.GetString(ProtectedData.Unprotect(File.ReadAllBytes(Store), null, DataProtectionScope.CurrentUser)); }
-        catch { return null; }
-    }
-
-    async Task<string> TokenAsync()
-    {
-        if (access != null && DateTime.UtcNow < expires) return access;
-        refresh ??= LoadRefresh();
-        if (refresh != null)
-        {
-            try { await ExchangeAsync(new() { ["grant_type"] = "refresh_token", ["refresh_token"] = refresh, ["client_id"] = id! }); return access!; }
-            catch { refresh = null; }
-        }
-        await LoginAsync();
-        return access!;
-    }
-
-    async Task ExchangeAsync(Dictionary<string, string> form)
-    {
-        var res = await Http.PostAsync("https://accounts.spotify.com/api/token", new FormUrlEncodedContent(form));
-        if (!res.IsSuccessStatusCode) throw new Exception("Spotify sign-in failed.");
-        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
-        var r = doc.RootElement;
-        access = r.GetProperty("access_token").GetString();
-        expires = DateTime.UtcNow.AddSeconds(r.GetProperty("expires_in").GetInt32() - 60);
-        if (r.TryGetProperty("refresh_token", out var rt))
-        {
-            refresh = rt.GetString();
-            Directory.CreateDirectory(Path.GetDirectoryName(Store)!);
-            File.WriteAllBytes(Store, ProtectedData.Protect(Encoding.UTF8.GetBytes(refresh!), null, DataProtectionScope.CurrentUser));
-        }
-    }
-
-    async Task LoginAsync()
-    {
-        var verifier = B64(RandomNumberGenerator.GetBytes(64));
-        var challenge = B64(SHA256.HashData(Encoding.ASCII.GetBytes(verifier)));
-        var state = B64(RandomNumberGenerator.GetBytes(16));
-        using var listener = new HttpListener();
-        listener.Prefixes.Add("http://127.0.0.1:5543/");
-        listener.Start();
-        Process.Start(new ProcessStartInfo("https://accounts.spotify.com/authorize" +
-            $"?client_id={id}&response_type=code&redirect_uri={Uri.EscapeDataString(Redirect)}" +
-            $"&scope={Uri.EscapeDataString(Scopes)}&code_challenge_method=S256&code_challenge={challenge}&state={state}") { UseShellExecute = true });
-        var ctx = await listener.GetContextAsync().WaitAsync(TimeSpan.FromMinutes(3));
-        var q = ctx.Request.QueryString;
-        var page = Encoding.UTF8.GetBytes("<body style='font-family:Segoe UI;background:#111;color:#fff;text-align:center;padding-top:20vh'><h2>Spotify connected</h2><p>You can close this tab and return to Glass.</p>");
-        ctx.Response.ContentType = "text/html";
-        await ctx.Response.OutputStream.WriteAsync(page);
-        ctx.Response.Close();
-        if (q["state"] != state || q["code"] == null) throw new Exception("Spotify sign-in was cancelled.");
-        await ExchangeAsync(new() { ["grant_type"] = "authorization_code", ["code"] = q["code"]!, ["redirect_uri"] = Redirect, ["client_id"] = id!, ["code_verifier"] = verifier });
-    }
-
-    // ---- API ----
-    async Task<HttpResponseMessage> SendAsync(HttpMethod m, string url, object? body = null)
-    {
-        var req = new HttpRequestMessage(m, "https://api.spotify.com/v1" + url);
-        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await TokenAsync());
-        if (m != HttpMethod.Get)
-            req.Content = body != null ? new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json") : new StringContent("");
-        return await Http.SendAsync(req);
-    }
-
-    public async Task<List<Track>> SearchAsync(string q)
-    {
-        if (!Enabled) throw new Exception("Spotify needs a free Client ID. Add SPOTIFY_CLIENT_ID to config.json (see Settings).");
-        var res = await SendAsync(HttpMethod.Get, $"/search?type=track&limit=10&q={Uri.EscapeDataString(q)}");
-        res.EnsureSuccessStatusCode();
-        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
-        var list = new List<Track>();
-        foreach (var t in doc.RootElement.GetProperty("tracks").GetProperty("items").EnumerateArray())
-            list.Add(ToTrack(t));
-        return list;
-    }
-
-    static Track ToTrack(JsonElement t)
-    {
-        var images = t.GetProperty("album").GetProperty("images");
-        return new Track(t.GetProperty("id").GetString()!, t.GetProperty("name").GetString() ?? "",
-            t.GetProperty("artists")[0].GetProperty("name").GetString() ?? "",
-            images.GetArrayLength() > 0 ? images[0].GetProperty("url").GetString() : null,
-            null, "Spotify", t.GetProperty("uri").GetString(), t.TryGetProperty("duration_ms", out var dm) ? dm.GetInt32() : 0);
-    }
-
-    public async Task<List<Track>> PlaylistAsync(string id)
-    {
-        var list = new List<Track>();
-        string? next = $"/playlists/{id}/tracks?limit=100";
-        while (next != null && list.Count < 300)
-        {
-            var res = await SendAsync(HttpMethod.Get, next);
-            if (!res.IsSuccessStatusCode) throw new Exception("Spotify wouldn't share that playlist with Glass. Playlists you own usually work.");
-            using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
-            foreach (var it in doc.RootElement.GetProperty("items").EnumerateArray())
-            {
-                try { if (it.TryGetProperty("track", out var t) && t.ValueKind == JsonValueKind.Object) list.Add(ToTrack(t)); }
-                catch { }
-            }
-            next = doc.RootElement.TryGetProperty("next", out var n) && n.ValueKind == JsonValueKind.String ? n.GetString()!.Replace("https://api.spotify.com/v1", "") : null;
-        }
-        return list;
-    }
-
-    public Task<string?> ResolveAsync(Track t) => Task.FromResult<string?>(null); // played remotely, see PlayAsync
-
-    // ---- account ----
-    public record Profile(string Name, string? Plan, string? Country, string? Image);
-
-    public async Task ConnectAsync() => await TokenAsync();
-
-    public void SignOut()
-    {
-        access = null; refresh = null;
-        try { File.Delete(Store); } catch { }
-    }
-
-    public async Task<Profile?> ProfileAsync()
-    {
-        if (!SignedIn) return null;
-        var res = await SendAsync(HttpMethod.Get, "/me");
-        if (!res.IsSuccessStatusCode) return null;
-        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
-        var e = doc.RootElement;
-        string? Str(string k) => e.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
-        string? img = e.TryGetProperty("images", out var im) && im.ValueKind == JsonValueKind.Array && im.GetArrayLength() > 0 ? im[0].GetProperty("url").GetString() : null;
-        return new Profile(Str("display_name") ?? Str("id") ?? "Spotify user", Str("product"), Str("country"), img);
-    }
-
-    // ---- playback (Spotify Connect) ----
-    async Task<(string Id, string Name)> PickDeviceAsync()
-    {
-        bool launched = false;
-        for (int attempt = 0; attempt < 9; attempt++)
-        {
-            var res = await SendAsync(HttpMethod.Get, "/me/player/devices");
-            res.EnsureSuccessStatusCode();
-            using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
-            var devs = doc.RootElement.GetProperty("devices").EnumerateArray().ToList();
-            deviceSummary = devs.Count == 0 ? "none" : string.Join(", ", devs.Select(d => $"{d.GetProperty("name").GetString()} ({d.GetProperty("type").GetString()})"));
-            bool IsPc(JsonElement d) => d.GetProperty("type").GetString() == "Computer" && !d.GetProperty("is_restricted").GetBoolean();
-            bool Active(JsonElement d) => d.GetProperty("is_active").GetBoolean();
-
-            var pick = devs.FirstOrDefault(d => IsPc(d) && Active(d));
-            if (pick.ValueKind == JsonValueKind.Undefined) pick = devs.FirstOrDefault(IsPc);
-
-            // No Spotify on this PC yet: launch it and wait up to ~6s for it to appear before falling back to other devices.
-            if (pick.ValueKind == JsonValueKind.Undefined && AutoLaunch && attempt < 6)
-            {
-                if (!launched) { launched = true; try { Process.Start(new ProcessStartInfo("spotify:") { UseShellExecute = true }); } catch { } }
-                await Task.Delay(1000);
-                continue;
-            }
-            if (pick.ValueKind == JsonValueKind.Undefined) pick = devs.FirstOrDefault(Active);
-            if (pick.ValueKind == JsonValueKind.Undefined && devs.Count > 0) pick = devs[0];
-            if (pick.ValueKind != JsonValueKind.Undefined)
-                return (pick.GetProperty("id").GetString()!, pick.GetProperty("name").GetString() ?? "Spotify");
-            if (!AutoLaunch) break;
-            await Task.Delay(1000);
-        }
-        throw new Exception("No Spotify device found. Open the Spotify app on this PC, then try again.");
-    }
-
-    string? deviceId;
-    string deviceSummary = "none";
-
-    public async Task<string> PlayAsync(string uri)
-    {
-        // 1) Preferred: play inside Glass itself (Spotify Web Playback SDK). No Spotify app needed.
-        if (Web != null)
-        {
-            var dev = await Web.WaitReadyAsync(TimeSpan.FromSeconds(15));
-            if (dev != null)
-            {
-                Web.ClearState();
-                for (int i = 0; i < 3; i++)
-                {
-                    var r = await SendAsync(HttpMethod.Put, $"/me/player/play?device_id={dev}", new { uris = new[] { uri } });
-                    if (r.StatusCode == HttpStatusCode.Forbidden) throw new Exception("Spotify Premium is required for playback.");
-                    if (r.IsSuccessStatusCode) { deviceId = dev; UseWeb = true; return "Glass"; }
-                    if (r.StatusCode != HttpStatusCode.NotFound) break;
-                    await Task.Delay(1000);
-                }
-            }
-        }
-        UseWeb = false;
-
-        // 2) Fallback: remote-control the Spotify desktop app.
-        string name = "";
-        for (int attempt = 0; attempt < 3; attempt++)
-        {
-            var (dev, n) = await PickDeviceAsync();
-            deviceId = dev; name = n;
-            // Wake the device and make it the active one before sending the track.
-            await SendAsync(HttpMethod.Put, "/me/player", new { device_ids = new[] { dev }, play = false });
-            await Task.Delay(attempt == 0 ? 600 : 1500);
-            var res = await SendAsync(HttpMethod.Put, $"/me/player/play?device_id={dev}", new { uris = new[] { uri } });
-            if (res.StatusCode == HttpStatusCode.Forbidden) throw new Exception("Spotify Premium is required for playback.");
-            if (res.IsSuccessStatusCode)
-            {
-                await Task.Delay(1500);
-                var st = await StateAsync();
-                if (st != null && (st.Value.Playing || st.Value.Uri == uri)) return name;
-            }
-            else await Task.Delay(1000);
-        }
-        throw new Exception("Couldn't start playback. Check that your Spotify Premium is active, then try again.");
-    }
-
-    async Task CmdAsync(string url, bool quiet = false)
-    {
-        if (deviceId != null) url += (url.Contains('?') ? "&" : "?") + "device_id=" + deviceId;
-        var res = await SendAsync(HttpMethod.Put, url);
-        if (!res.IsSuccessStatusCode && res.StatusCode != HttpStatusCode.Forbidden && !quiet)
-            throw new Exception($"Spotify error ({(int)res.StatusCode}).");
-    }
-    public Task PauseAsync() => UseWeb ? Web!.CallAsync("pause()") : CmdAsync("/me/player/pause");
-    public Task ResumeAsync() => UseWeb ? Web!.CallAsync("resume()") : CmdAsync("/me/player/play");
-    public Task SeekAsync(int ms) => UseWeb ? Web!.CallAsync($"seek({ms})") : CmdAsync($"/me/player/seek?position_ms={ms}");
-    public Task VolumeAsync(int pct) => UseWeb ? Web!.CallAsync("setVolume(" + (pct / 100.0).ToString("0.00", CultureInfo.InvariantCulture) + ")") : CmdAsync($"/me/player/volume?volume_percent={pct}", quiet: true);
-
-    public async Task<(bool Playing, int Progress, int Duration, string? Uri)?> StateAsync()
-    {
-        if (UseWeb) return Web?.Current();
-        var res = await SendAsync(HttpMethod.Get, "/me/player");
-        if (res.StatusCode != HttpStatusCode.OK) return null;
-        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
-        var e = doc.RootElement;
-        if (!e.TryGetProperty("item", out var item) || item.ValueKind != JsonValueKind.Object) return null;
-        return (e.GetProperty("is_playing").GetBoolean(), e.GetProperty("progress_ms").GetInt32(),
-                item.GetProperty("duration_ms").GetInt32(), item.GetProperty("uri").GetString());
-    }
 }
 
 /// <summary>Songs imported from files on this PC.</summary>

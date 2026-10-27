@@ -1,3 +1,4 @@
+// Modified 2026-10-26 by N3moStudio: native ARM64, performance, Spotify integration and packaging. Original work by Jonzu00; GPL-3.0.
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -26,12 +27,15 @@ public partial class MainWindow : Window
     AudioEngine? engine;
     long fallbackMs;
     bool importOpen;
-    readonly DispatcherTimer timer = new() { Interval = TimeSpan.FromMilliseconds(250) };
+    readonly DispatcherTimer timer = new() { Interval = TimeSpan.FromMilliseconds(500) };
     readonly DispatcherTimer seekDebounce = new() { Interval = TimeSpan.FromMilliseconds(300) };
     readonly DispatcherTimer volDebounce = new() { Interval = TimeSpan.FromMilliseconds(300) };
     readonly Dictionary<string, IProvider> providers = new();
     IProvider? provider;
     Spotify? spotify;
+    readonly SpotifyDesktop desktop = new();
+    System.Windows.Forms.NotifyIcon? tray;
+    bool didAutoHide;
     bool updating, playing, advanced, polling, settingsOpen;
 
     // Spotify remote state: non-null while a Spotify track is the one playing
@@ -40,29 +44,34 @@ public partial class MainWindow : Window
     int rProgress, rDuration;
     DateTime rStamp, lastPoll, playStart;
     bool rPlaying;
+    int libraryRequest;
+    CancellationTokenSource? libraryCancellation;
 
     public MainWindow()
     {
         InitializeComponent();
 
         _ = Task.Run(Cache.Cleanup);
-        Spotify.AutoLaunch = cfg.LaunchSpotify;
         foreach (IProvider p in new IProvider[] { new YouTubeMusic(), new SoundCloud(), new Spotify(), new LocalFiles() })
             providers[p.Name] = p;
         spotify = (Spotify)providers["Spotify"];
-        spotify.Web = new WebPlayer(Web, spotify);
-        Loaded += (_, _) => { if (spotify is { SignedIn: true, Web: not null }) _ = spotify.Web.StartAsync(); }; // warm up so the first song starts fast
+        spotify.Desktop = desktop;
+        spotify.LibrarySession = new SpotifyWebSession();
+        spotify.Library = new SpotifyWebLibrary(spotify.LibrarySession);
+        desktop.Changed += state => Dispatcher.InvokeAsync(() => DesktopChanged(state));
+        Loaded += async (_, _) => await Safe(desktop.StartAsync);
+        BuildDetail.Text = $"Running natively as {RuntimeInformation.ProcessArchitecture} · .NET {Environment.Version.Major}";
 
         AutoplayToggle.IsChecked = cfg.Autoplay;
-        LaunchToggle.IsChecked = cfg.LaunchSpotify;
         VolumeToggle.IsChecked = cfg.RememberVolume;
         GlowToggle.IsChecked = cfg.AmbientGlow;
+        HideSpotifyToggle.IsChecked = cfg.HideSpotify;
         if (!cfg.AmbientGlow) Ambient.Opacity = 0;
         if (cfg.RememberVolume) Volume.Value = cfg.Volume;
 
-        SoundCloudBtn.IsChecked = true; // works with no keys
+        SpotifyBtn.IsChecked = true;
 
-        StartEngine(); // VLC loads in the background so the window opens instantly
+        // Audio and browser runtimes are initialized only when their feature is used.
 
         seekDebounce.Tick += async (_, _) => { seekDebounce.Stop(); await Safe(() => activeSp?.SeekAsync((int)(Seek.Value * 1000)) ?? Task.CompletedTask); };
         volDebounce.Tick += async (_, _) => { volDebounce.Stop(); await Safe(() => activeSp?.VolumeAsync((int)(Volume.Value * 100)) ?? Task.CompletedTask); };
@@ -81,7 +90,7 @@ public partial class MainWindow : Window
             Dur.Text = Fmt(TimeSpan.FromMilliseconds(len));
             updating = false;
         };
-        timer.Start();
+        StateChanged += (_, _) => timer.Interval = WindowState == WindowState.Minimized ? TimeSpan.FromSeconds(5) : TimeSpan.FromMilliseconds(500);
 
         PreviewKeyDown += (_, e) => { if (e.Key != Key.Escape) return; if (importOpen) ToggleImport(false); else if (settingsOpen) ToggleSettings(false); };
     }
@@ -119,10 +128,17 @@ public partial class MainWindow : Window
 
     protected override void OnClosed(EventArgs e)
     {
+        timer.Stop(); seekDebounce.Stop(); volDebounce.Stop();
+        libraryCancellation?.Cancel();
+        CompositionTarget.Rendering -= ScrollStep;
+        engine?.Dispose();
+        desktop.Dispose();
+        if (tray != null) { tray.Visible = false; tray.Dispose(); }
+        spotify?.Web?.Disconnect();
+        Web.Dispose();
         cfg.Volume = Volume.Value;
         cfg.Save();
         base.OnClosed(e);
-        Environment.Exit(0); // make sure no background audio/web processes keep Glass alive
     }
 
     static string Fmt(TimeSpan t) => $"{(int)t.TotalMinutes}:{t.Seconds:00}";
@@ -131,6 +147,76 @@ public partial class MainWindow : Window
     {
         try { await action(); } catch (Exception ex) { Status.Text = ex.Message; }
     }
+
+    byte[]? desktopArtwork;
+    void DesktopChanged(SpotifyDesktop.State? state)
+    {
+        if (closing || (provider != spotify && activeSp?.Desktop == null)) return;
+        if (state == null)
+        {
+            if (activeSp?.Desktop != null)
+            {
+                activeSp = null; nowPlaying = null; SetPlaying(false);
+                TitleText.Text = "Nothing playing"; ArtistText.Text = "Open Spotify and start a song";
+            }
+            Seek.IsEnabled = false; NextBtn.IsEnabled = false; PrevBtn.IsEnabled = false;
+            PlayBtn.IsEnabled = true;
+            return;
+        }
+        if (state.Playing) engine?.Stop();
+        activeSp = spotify;
+        nowPlaying = new Track("desktop", state.Title, state.Artist, null, null, "Spotify", null, state.DurationMs);
+        TitleText.Text = string.IsNullOrWhiteSpace(state.Title) ? "Spotify" : state.Title;
+        ArtistText.Text = state.Artist;
+        if (!ReferenceEquals(desktopArtwork, state.Artwork))
+        {
+            desktopArtwork = state.Artwork;
+            BitmapImage? image = null;
+            if (state.Artwork != null)
+            {
+                try
+                {
+                    using var stream = new MemoryStream(state.Artwork);
+                    image = new BitmapImage(); image.BeginInit(); image.CacheOption = BitmapCacheOption.OnLoad;
+                    image.StreamSource = stream; image.DecodePixelWidth = 480; image.EndInit(); image.Freeze();
+                }
+                catch (Exception ex) when (ex is IOException or NotSupportedException or ArgumentException)
+                { image = null; }
+            }
+            ArtBrush.ImageSource = image; Glow.Source = image;
+        }
+        Seek.IsEnabled = state.CanSeek;
+        NextBtn.IsEnabled = state.CanNext; PrevBtn.IsEnabled = state.CanPrevious;
+        PlayBtn.IsEnabled = state.Playing ? state.CanPause : state.CanPlay;
+        SetPlaying(state.Playing);
+        _ = RemoteTickAsync(spotify!);
+        if (state.Playing && cfg.HideSpotify && !didAutoHide) { didAutoHide = true; HideSpotify(); }
+    }
+
+    void EnsureTray()
+    {
+        if (tray != null) return;
+        var menu = new System.Windows.Forms.ContextMenuStrip();
+        menu.Items.Add("Open GlassPlayer", null, (_, _) => Dispatcher.Invoke(() => { Show(); WindowState = WindowState.Normal; Activate(); }));
+        menu.Items.Add("Show Spotify", null, (_, _) => Dispatcher.Invoke(() => ShowSpotify_Click(this, new RoutedEventArgs())));
+        menu.Items.Add("Hide Spotify", null, (_, _) => Dispatcher.Invoke(HideSpotify));
+        menu.Items.Add(new System.Windows.Forms.ToolStripSeparator());
+        menu.Items.Add("Quit GlassPlayer", null, (_, _) => Dispatcher.Invoke(Close));
+        tray = new System.Windows.Forms.NotifyIcon
+        {
+            Text = "GlassPlayer — Spotify controls", Icon = System.Drawing.SystemIcons.Application,
+            ContextMenuStrip = menu, Visible = true
+        };
+        tray.DoubleClick += (_, _) => Dispatcher.Invoke(() => { Show(); WindowState = WindowState.Normal; Activate(); });
+    }
+    void HideSpotify() { EnsureTray(); desktop.Hide(); }
+    async void ShowSpotify_Click(object sender, RoutedEventArgs args)
+    {
+        didAutoHide = true; // A deliberate Show action stays visible until the user hides or plays from GlassPlayer.
+        desktop.RestoreHidden();
+        await Safe(() => { desktop.Show(); return Task.CompletedTask; });
+    }
+    void HideSpotify_Click(object sender, RoutedEventArgs args) => HideSpotify();
 
     void StartEngine()
     {
@@ -212,11 +298,22 @@ public partial class MainWindow : Window
         sv.ScrollToVerticalOffset(sv.VerticalOffset + diff * 0.18);
     }
 
-    // ---- Spotify progress: poll the API about every 1.5s and interpolate in between ----
+    // Interpolate locally; remote API polls are deliberately sparse to preserve quota and battery.
     async Task RemoteTickAsync(Spotify sp)
     {
         var now = DateTime.UtcNow;
-        if (!polling && (now - lastPoll).TotalMilliseconds > 1500)
+        if (sp.Desktop != null)
+        {
+            if (await sp.StateAsync() is not { } native) return;
+            updating = true;
+            Seek.Maximum = Math.Max(1, native.Duration / 1000.0);
+            if (!Seek.IsMouseCaptureWithin) Seek.Value = native.Progress / 1000.0;
+            Cur.Text = Fmt(TimeSpan.FromMilliseconds(native.Progress));
+            Dur.Text = Fmt(TimeSpan.FromMilliseconds(native.Duration));
+            updating = false;
+            return;
+        }
+        if (!polling && (now - lastPoll).TotalSeconds > (rPlaying ? 5 : 15))
         {
             polling = true; lastPoll = now;
             try
@@ -230,7 +327,7 @@ public partial class MainWindow : Window
             catch (Exception ex) { Status.Text = ex.Message; }
             polling = false;
         }
-        if (rDuration <= 0) return;
+        if (rDuration <= 0 || WindowState == WindowState.Minimized) return;
         int pos = rPlaying ? Math.Min(rProgress + (int)(DateTime.UtcNow - rStamp).TotalMilliseconds, rDuration) : rProgress;
         updating = true;
         Seek.Maximum = rDuration / 1000.0;
@@ -242,10 +339,60 @@ public partial class MainWindow : Window
     }
 
     // ---- search ----
-    void Provider_Checked(object s, RoutedEventArgs e)
+    async void Provider_Checked(object s, RoutedEventArgs e)
     {
         if (s is RadioButton { Tag: string name } && providers.TryGetValue(name, out var p)) provider = p;
-        if (SearchBox.Text.Length > 0) _ = SearchAsync();
+        if (provider == null) return;
+        libraryRequest++;
+        libraryCancellation?.Cancel();
+        LibraryBar.Visibility = provider == spotify ? Visibility.Visible : Visibility.Collapsed;
+        List.ItemsSource = null;
+        if (provider == spotify) await LoadPlaylistsAsync();
+        else if (SearchBox.Text.Length > 0) await SearchAsync();
+        else Status.Text = "Search for a song or artist, or import local audio.";
+        if (provider == spotify) DesktopChanged(desktop.Current);
+    }
+
+    async void Library_Click(object s, RoutedEventArgs e) => await LoadPlaylistsAsync();
+
+    async Task LoadPlaylistsAsync()
+    {
+        if (spotify == null) return;
+        int request = ++libraryRequest;
+        libraryCancellation?.Cancel();
+        libraryCancellation = new CancellationTokenSource();
+        if (!spotify.SignedIn)
+        {
+            List.ItemsSource = null;
+            Status.Text = "Open Spotify and sign in to play. Choose Connect library in Settings to show your playlists here.";
+            return;
+        }
+        Status.Text = "Loading your playlists…";
+        try
+        {
+            var playlists = await spotify.PlaylistsAsync(libraryCancellation.Token);
+            if (request != libraryRequest) return;
+            List.ItemsSource = playlists;
+            Status.Text = playlists.Count == 0 ? "No playlists returned. Check the account connected in Settings." : $"{playlists.Count} playlists · Select one to see its songs.";
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { if (request == libraryRequest) Status.Text = ex.Message; }
+    }
+
+    async Task OpenPlaylistAsync(Spotify.Playlist playlist)
+    {
+        int request = ++libraryRequest;
+        libraryCancellation?.Cancel();
+        libraryCancellation = new CancellationTokenSource();
+        Status.Text = "Loading " + playlist.Title + "…";
+        try
+        {
+            var tracks = await spotify!.PlaylistAsync(playlist.Id, libraryCancellation.Token);
+            if (request != libraryRequest) return;
+            ShowTracks(tracks, $"{playlist.Title} · {tracks.Count} playable songs");
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { if (request == libraryRequest) Status.Text = ex.Message; }
     }
 
     void Search_KeyDown(object s, KeyEventArgs e) { if (e.Key == Key.Enter) _ = SearchAsync(); }
@@ -253,25 +400,46 @@ public partial class MainWindow : Window
     async Task SearchAsync()
     {
         if (provider == null || string.IsNullOrWhiteSpace(SearchBox.Text)) return;
-        Status.Text = provider is Spotify { SignedIn: false } ? "Approve Glass in your browser to connect Spotify…" : "Searching…";
+        int request = ++libraryRequest;
+        libraryCancellation?.Cancel();
+        var searchProvider = provider;
+        Status.Text = provider is Spotify { SignedIn: false } ? "Connect your Spotify library in Settings first." : "Searching…";
         try
         {
-            var results = await provider.SearchAsync(SearchBox.Text.Trim());
+            var results = await searchProvider.SearchAsync(SearchBox.Text.Trim());
+            if (request != libraryRequest) return;
             List.ItemsSource = results;
             Status.Text = results.Count == 0 ? "No results. Try different words." : "";
             _ = AnimateResultsAsync();
         }
-        catch (Exception ex) { Status.Text = "Search failed: " + ex.Message; }
+        catch (Exception ex) { if (request == libraryRequest) Status.Text = "Search failed: " + ex.Message; }
     }
 
     void List_SelectionChanged(object s, SelectionChangedEventArgs e)
     {
         if (List.SelectedItem is Track t) _ = PlayAsync(t);
+        else if (List.SelectedItem is Spotify.Playlist playlist) _ = OpenPlaylistAsync(playlist);
     }
 
     // ---- playback ----
     async Task PlayAsync(Track t)
     {
+        if (t.Source == "Spotify" && spotify?.Desktop != null)
+        {
+            engine?.Stop();
+            Status.Text = "Starting " + t.Title + "…";
+            try
+            {
+                await spotify.PlayAsync(t.OpenUri!, t);
+                Status.Text = "Playing in Spotify";
+                if (cfg.HideSpotify) HideSpotify();
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception ex) { Status.Text = ex.Message; }
+            DesktopChanged(desktop.Current);
+            return;
+        }
+        Seek.IsEnabled = true; PrevBtn.IsEnabled = true; NextBtn.IsEnabled = true; PlayBtn.IsEnabled = true;
         nowPlaying = t; advanced = false;
         fallbackMs = t.DurationMs;
         updating = true; Seek.Maximum = 1; Seek.Value = 0; Cur.Text = "0:00"; Dur.Text = t.DurationMs > 0 ? Fmt(TimeSpan.FromMilliseconds(t.DurationMs)) : "0:00"; updating = false;
@@ -294,6 +462,14 @@ public partial class MainWindow : Window
                 engine?.Stop();
                 Status.Text = "Starting Spotify…";
                 var device = await sp.PlayAsync(t.OpenUri!);
+                if (sp.Desktop != null)
+                {
+                    activeSp = sp;
+                    DesktopChanged(desktop.Current);
+                    Status.Text = "Sent to Spotify. Controls follow its actual playback.";
+                    if (cfg.HideSpotify && desktop.Current != null) HideSpotify();
+                    return;
+                }
                 playStart = DateTime.UtcNow;
                 activeSp = sp; rPlaying = true; rProgress = 0; rDuration = 0; rStamp = DateTime.UtcNow; lastPoll = DateTime.MinValue;
                 SetPlaying(true);
@@ -306,6 +482,9 @@ public partial class MainWindow : Window
                 Status.Text = "Loading…";
                 var url = await providers[t.Source].ResolveAsync(t);
                 if (url == null) { Status.Text = "This track can't be streamed."; return; }
+                if (engine == null) StartEngine();
+                // Wait without blocking the UI so the very first local track uses native VLC too.
+                await engine!.Ready.WaitAsync(TimeSpan.FromSeconds(15));
                 engine!.Open(url);
                 playStart = DateTime.UtcNow;
                 SetPlaying(true);
@@ -317,6 +496,8 @@ public partial class MainWindow : Window
 
     void SetPlaying(bool on)
     {
+        if (on || (activeSp != null && activeSp.Desktop == null)) timer.Start(); else timer.Stop();
+        if (playing == on) return;
         playing = on;
         PlayBtn.Content = on ? "\uE769" : "\uE768";
         double scale = on ? 1.0 : 0.88; // cover art swells while playing, settles when paused
@@ -326,8 +507,15 @@ public partial class MainWindow : Window
 
     async void PlayPause_Click(object s, RoutedEventArgs e)
     {
-        if (List.SelectedItem == null) return;
+        if (provider == spotify && desktop.Current == null)
+        { await Safe(() => { desktop.Show(); return Task.CompletedTask; }); return; }
+        if (nowPlaying == null) return;
         bool resume = !playing;
+        if (activeSp?.Desktop != null)
+        {
+            await Safe(() => resume ? desktop.ResumeAsync() : desktop.PauseAsync());
+            return;
+        }
         SetPlaying(resume);
         if (activeSp != null)
         {
@@ -344,8 +532,10 @@ public partial class MainWindow : Window
         if (n == 0) return;
         List.SelectedIndex = ((List.SelectedIndex + d) % n + n) % n;
     }
-    void Next_Click(object s, RoutedEventArgs e) => Step(1);
-    void Prev_Click(object s, RoutedEventArgs e) => Step(-1);
+    async void Next_Click(object s, RoutedEventArgs e)
+    { if (activeSp?.Desktop != null) await Safe(desktop.NextAsync); else Step(1); }
+    async void Prev_Click(object s, RoutedEventArgs e)
+    { if (activeSp?.Desktop != null) await Safe(desktop.PreviousAsync); else Step(-1); }
 
     void Seek_ValueChanged(object s, RoutedPropertyChangedEventArgs<double> e)
     {
@@ -419,7 +609,7 @@ public partial class MainWindow : Window
             if (link.Contains("spotify", StringComparison.OrdinalIgnoreCase))
             {
                 if (!sp.Success) throw new Exception("For Spotify, paste a playlist link.");
-                if (!spotify!.Enabled) throw new Exception("Spotify needs a Client ID first (see Settings).");
+                if (!spotify!.SignedIn) throw new Exception("Connect your Spotify library in Settings first.");
                 tracks = await spotify.PlaylistAsync(sp.Groups[1].Value);
             }
             else if (Regex.IsMatch(link, "youtube\\.com|youtu\\.be|soundcloud\\.com", RegexOptions.IgnoreCase))
@@ -436,7 +626,7 @@ public partial class MainWindow : Window
             }
         }
         catch (Exception ex) { ImportStatus.Text = ex.Message; }
-        ImportGo.IsEnabled = true;
+        finally { ImportGo.IsEnabled = true; }
     }
 
     // ---- settings sheet ----
@@ -484,7 +674,7 @@ public partial class MainWindow : Window
         if (spotify == null || !spotify.Enabled)
         {
             SpotifyName.Text = "Spotify";
-            SpotifyDetail.Text = "Add SPOTIFY_CLIENT_ID to config.json to turn it on.";
+            SpotifyDetail.Text = "Spotify is unavailable.";
             SpotifyAction.Visibility = Visibility.Collapsed;
             SetAvatar(null, "S");
             return;
@@ -493,13 +683,13 @@ public partial class MainWindow : Window
         if (!spotify.SignedIn)
         {
             SpotifyName.Text = "Not connected";
-            SpotifyDetail.Text = "Connect your Premium account to play full tracks.";
-            SpotifyAction.Content = "Connect";
+            SpotifyDetail.Text = "Sign in to show playlists here. Playback uses the Spotify desktop app, including on Free accounts.";
+            SpotifyAction.Content = "Connect library";
             SetAvatar(null, "S");
             return;
         }
 
-        SpotifyAction.Content = "Sign out";
+        SpotifyAction.Content = "Disconnect";
         SpotifyName.Text = "Loading…";
         SpotifyDetail.Text = "";
         try
@@ -516,8 +706,8 @@ public partial class MainWindow : Window
             string plan = pr.Plan switch
             {
                 "premium" => "Spotify Premium",
-                null => "Connected",
-                _ => "Free plan. Playback needs Premium"
+                null => "Library connected · audio plays in Spotify",
+                _ => "Spotify Free · audio plays in Spotify"
             };
             SpotifyDetail.Text = pr.Country != null ? $"{plan} ({pr.Country})" : plan;
             SetAvatar(pr.Image, pr.Name.Length > 0 ? pr.Name[..1].ToUpper() : "S");
@@ -532,15 +722,19 @@ public partial class MainWindow : Window
         {
             if (activeSp != null) { await Safe(spotify.PauseAsync); activeSp = null; SetPlaying(false); }
             spotify.SignOut();
+            libraryRequest++;
+            libraryCancellation?.Cancel();
+            if (provider == spotify) List.ItemsSource = null;
             await RefreshAccountsAsync();
             return;
         }
         SpotifyAction.IsEnabled = false;
-        SpotifyDetail.Text = "Approve Glass in your browser…";
+        SpotifyDetail.Text = "Sign in in the temporary Spotify window. It closes when connected…";
         try { await spotify.ConnectAsync(); }
         catch (Exception ex) { SpotifyDetail.Text = ex.Message; SpotifyAction.IsEnabled = true; return; }
         SpotifyAction.IsEnabled = true;
         await RefreshAccountsAsync();
+        if (provider == spotify) await LoadPlaylistsAsync();
     }
 
     void Setting_Click(object s, RoutedEventArgs e)
@@ -550,9 +744,9 @@ public partial class MainWindow : Window
         switch (key)
         {
             case "Autoplay": cfg.Autoplay = on; break;
-            case "Launch": cfg.LaunchSpotify = on; Spotify.AutoLaunch = on; break;
             case "Volume": cfg.RememberVolume = on; break;
             case "Glow": cfg.AmbientGlow = on; Anim(Ambient, OpacityProperty, on ? 1 : 0, 600); break;
+            case "HideSpotify": cfg.HideSpotify = on; if (on && desktop.Current != null) HideSpotify(); else if (!on) desktop.RestoreHidden(); break;
         }
         cfg.Save();
     }

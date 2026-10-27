@@ -1,0 +1,11 @@
+* text=auto eol=lf
+licenses/** -whitespace
+*.cs text eol=lf
+*.xaml text eol=lf
+*.csproj text eol=lf
+*.props text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.ps1 text eol=lf
+*.yml text eol=lf
+*.iss text eol=lf

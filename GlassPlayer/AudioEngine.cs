@@ -1,4 +1,6 @@
+// Modified 2026-10-26 by N3moStudio: native ARM64, performance, Spotify integration and packaging. Original work by Jonzu00; GPL-3.0.
 using System;
+using System.Runtime.InteropServices;
 using System.IO;
 using System.Threading.Tasks;
 using System.Windows.Threading;
@@ -10,16 +12,19 @@ namespace GlassPlayer;
 /// Plays songs. Uses VLC when it is ready (plays any format) and falls back to Windows' built-in player
 /// if VLC is still loading, fails to start, or doesn't produce sound. Problems are logged to %LocalAppData%\GlassPlayer\audio.log.
 /// </summary>
-class AudioEngine
+class AudioEngine : IDisposable
 {
     readonly Dispatcher ui;
     LibVLC? lib;
     LibVLCSharp.Shared.MediaPlayer? vlc;
     System.Windows.Media.MediaPlayer? wpf;
-    bool vlcReady, usingVlc, paused;
+    bool vlcReady, usingVlc, paused, disposed;
     string? current;
     int openId;
     double volume;
+    readonly TaskCompletionSource initialized = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    public Task Ready => initialized.Task;
+    internal bool UsingVlc => usingVlc;
 
     public event Action? Ended;
     public event Action<string>? Failed;
@@ -32,7 +37,8 @@ class AudioEngine
         {
             try
             {
-                Core.Initialize();
+                var arch = RuntimeInformation.ProcessArchitecture switch { Architecture.Arm64 => "win-arm64", Architecture.X64 => "win-x64", _ => "win-x86" };
+                Core.Initialize(Path.Combine(AppContext.BaseDirectory, "libvlc", arch));
                 var l = new LibVLC("--no-video", "--quiet");
                 l.Log += (_, e) => { if (e.Level == LogLevel.Error) Log(e.Message); };
                 var p = new LibVLCSharp.Shared.MediaPlayer(l);
@@ -40,12 +46,14 @@ class AudioEngine
                 p.EncounteredError += (_, _) => ui.InvokeAsync(() => { if (usingVlc) Fallback("VLC reported an error"); });
                 ui.InvokeAsync(() =>
                 {
+                    if (disposed) { p.Dispose(); l.Dispose(); initialized.TrySetResult(); return; }
                     lib = l; vlc = p;
                     p.Volume = (int)Math.Round(this.volume * 100);
                     vlcReady = true;
+                    initialized.TrySetResult();
                 });
             }
-            catch (Exception ex) { Log("VLC failed to start: " + ex); }
+            catch (Exception ex) { Log("VLC failed to start: " + ex); initialized.TrySetResult(); }
         });
     }
 
@@ -58,6 +66,17 @@ class AudioEngine
             File.AppendAllText(Path.Combine(dir, "audio.log"), $"{DateTime.Now:HH:mm:ss} {msg}\n");
         }
         catch { }
+    }
+
+    public void Dispose()
+    {
+        disposed = true;
+        openId++;
+        usingVlc = false;
+        StopCurrent();
+        wpf?.Close();
+        vlc?.Dispose();
+        lib?.Dispose();
     }
 
     public void Open(string pathOrUrl)

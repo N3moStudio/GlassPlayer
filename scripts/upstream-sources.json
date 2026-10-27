@@ -1,0 +1,12 @@
+[
+  {
+    "url": "https://download.videolan.org/pub/videolan/vlc/3.0.24/vlc-3.0.24.tar.xz",
+    "sha256": "e7cab503d1d7d5849b89d2cf0e1ee60d0ef6d012407791b644b9cfc0cc225fdf",
+    "file": "vlc-3.0.24.tar.xz"
+  },
+  {
+    "url": "https://github.com/videolan/libvlcsharp/archive/3082c09ca955131c705fc4767fde03e9c4a14999.tar.gz",
+    "sha256": "b9e12cbca8038fc78b468f53da80c0fb24f01963cb3c7205a23abbc7f832b79f",
+    "file": "LibVLCSharp-3.10.2-source.tar.gz"
+  }
+]

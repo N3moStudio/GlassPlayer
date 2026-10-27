@@ -1,0 +1,15 @@
+**/bin/
+**/obj/
+.tools/
+artifacts/
+*.user
+*.bin
+*.log
+.vs/
+.env
+.env.*
+config.local.json
+spotify-library/
+**/User Data/
+**/profiles/
+installer-output/

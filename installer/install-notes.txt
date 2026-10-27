@@ -1,0 +1,15 @@
+GlassPlayer community fork by N3moStudio
+Original application and glass interface by Jonzu00.
+
+This installer adds GlassPlayer to your Start menu and Windows Installed apps.
+It installs for your Windows account without administrator access.
+An optional desktop shortcut is available on the next page.
+
+Spotify playback requires the official Spotify desktop application and your own
+Spotify account. GlassPlayer can hide Spotify's window, but Spotify must keep
+running to supply audio. Spotify is not bundled or installed by this setup.
+The experimental playlist connector uses a temporary WebView2 sign-in window.
+Microsoft Edge WebView2 Runtime must be available for that feature.
+
+No Spotify Client ID, account session, or personal configuration is included.
+This is an independent GPL-3.0 community fork, not an official Spotify product.
