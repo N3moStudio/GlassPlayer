@@ -13,6 +13,6 @@ GlassPlayer remains GPL-3.0. Dependency licenses remain their own; this document
 | Stopify protocol references | `38da838` | MIT, Shashwat | https://github.com/Anattana-Labs/Stopify |
 | Inno Setup | 6.x build tool | Jordan Russell / Martijn Laan, Inno Setup license | https://jrsoftware.org/ |
 
-License texts are included under `licenses/`, alongside the runtime's own notices. Native VLC and LibVLCSharp are dynamically linked and remain replaceable. The release includes the upstream VLC source archive and LibVLCSharp source snapshot alongside GlassPlayer's tagged source. VLC's source contains its build instructions and third-party dependency recipes; see its `contrib/` directory.
+License texts are included under `licenses/`, alongside the runtime's own notices. Native VLC and LibVLCSharp are dynamically linked and remain replaceable. The release's dependency-source ZIP contains the upstream VLC source archive and LibVLCSharp source snapshot; GlassPlayer's own source is available at the release tag. VLC's source contains its build instructions and third-party dependency recipes; see its `contrib/` directory.
 
 The optional yt-dlp executable is downloaded only when a non-Spotify provider needs it. It is not included in the installer. See https://github.com/yt-dlp/yt-dlp for its source and licensing. Spotify and WebView2 Runtime are external prerequisites and are not bundled.

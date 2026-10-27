@@ -1,6 +1,6 @@
 ; Community fork installer. Copyright (c) 2026 N3moStudio. GPL-3.0-only.
 #ifndef AppVersion
-  #define AppVersion "0.2.0-preview.1"
+  #define AppVersion "0.2.0"
 #endif
 #ifndef Arch
   #define Arch "arm64"

@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0-preview.1 — 2026-10-26
+## 0.2.0 — 2026-10-26
 
 First packaged release of N3moStudio's community fork of Jonzu00/GlassPlayer.
 
@@ -10,6 +10,7 @@ First packaged release of N3moStudio's community fork of Jonzu00/GlassPlayer.
 - Per-user `.exe` installer, Start menu shortcut, Windows Installed apps entry, uninstaller, optional desktop shortcut, stable app identity and single-instance activation.
 - Blank Spotify configuration in distributed files; personal sessions and settings stay outside the repository.
 - Repeatable release build, architecture checks, fixture tests and SHA-256 checksums.
+- Full release with versioned installer/portable filenames, one dependency-source ZIP and a single `SHA256SUMS.txt` file.
 
 ### Performance and reliability
 
@@ -32,7 +33,8 @@ First packaged release of N3moStudio's community fork of Jonzu00/GlassPlayer.
 
 - Local ARM64 validation: 24 automated checks passed, including native VLC decode/pause/seek/resume and Windows media-session initialization.
 - A real account loaded 118 library entries and a five-track playlist; resuming Spotify playback with its window hidden was observed. No GlassPlayer library WebView process remained afterward.
+- Installation, Start menu/Installed apps registration, configuration-preserving upgrade, uninstall and reinstall passed on the development ARM64 PC. Packaged startup, single-instance activation and clean shutdown passed.
 - Selected-track activation, long-duration playback, ads, session refresh and clean-machine installation require their own acceptance checks; fixture results do not prove them.
 - Spotify stays running and still consumes memory/CPU. The Android client's Widevine playback engine was not ported to Windows.
 - The library protocol is unofficial and may change. Selected-track activation currently expects Spotify's English accessible button labels; unsupported or ambiguous controls produce an error instead of clicking another song.
-- Preview binaries are not Authenticode-signed. The application is native ARM64; the small Inno Setup installer runs through Windows x86 compatibility on ARM.
+- Binaries are not Authenticode-signed. The application is native ARM64; the small Inno Setup installer runs through Windows x86 compatibility on ARM.

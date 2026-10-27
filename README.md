@@ -18,7 +18,7 @@ Run setup to install for your Windows account. It adds **GlassPlayer** to Start 
 
 Requirements: Windows 11, the appropriate CPU architecture, and Internet access for streaming. The application includes its .NET runtime. Microsoft's [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/) is needed only for temporary Spotify library sign-in.
 
-The **ARM64 application, .NET runtime and VLC libraries are native ARM64**. Inno Setup's short-lived installer uses Windows x86 compatibility on ARM. This preview is not code-signed, so Windows may identify its publisher as unknown. Compare downloads with the supplied SHA-256 checksum files.
+The **ARM64 application, .NET runtime and VLC libraries are native ARM64**. Inno Setup's short-lived installer uses Windows x86 compatibility on ARM. The application is not code-signed, so Windows may identify its publisher as unknown. `SHA256SUMS.txt` lists checksums for all downloads. The dependency-source ZIP and GitHub's automatic source-code archives are for developers; you only need the installer for your PC.
 
 ## Spotify with a Free account
 
@@ -53,7 +53,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the release description and [CREDITS.md](CR
 
 Local Windows ARM64 testing passed 24 checks, including real native VLC silent-PCM decode/pause/seek/resume and Windows media-session initialization. A signed-in Spotify account loaded more than 100 library entries and playlist tracks; resuming Spotify playback while its window was hidden was observed. No GlassPlayer library-browser process remained after sign-in.
 
-CI runs account-free fixtures and checks packaged binary architecture. These checks do not prove Spotify account access, audible output, long-duration playback, advertisements, refresh after expiry, or every track's availability. Selected-track activation and installation/uninstallation have separate acceptance checks. This is a preview release, not a claim that every Spotify flow has been validated.
+CI runs account-free fixtures and checks packaged binary architecture. On the development ARM64 PC, installation, Start menu/Installed apps registration, configuration-preserving upgrade, uninstall and reinstall checks passed, along with packaged startup, single-instance activation and clean shutdown. These checks do not prove Spotify account access, audible output, long-duration playback, advertisements, refresh after expiry, or every track's availability. Selected-track activation still needs real-account acceptance testing.
 
 [Stopify](https://github.com/Anattana-Labs/Stopify) uses Android Media3 and the platform's Widevine DRM support. GlassPlayer's Windows audio backend does not provide that Android system. This fork adapts library/session ideas but does not port the Android audio decoder or provide an independent Free-account Spotify streaming engine. See [Android's DRM documentation](https://developer.android.com/media/media3/exoplayer/drm).
 
@@ -72,7 +72,7 @@ dotnet run --project GlassPlayer.Tests -c Release -r win-arm64
 
 Replace `arm64` with `x64` for Intel/AMD. `-SkipInstaller` builds a verified portable ZIP without Inno Setup. `--ci` on the test program skips the two interactive media/audio checks and labels them skipped. Use a fresh output directory for every release build.
 
-The build copies only a clean publish tree, forces a blank Client ID, rejects account/debug files, and verifies native executable/runtime/VLC architecture. GitHub Actions produces installers and ZIPs. Version tags create preview releases. Corresponding GlassPlayer source is the release tag; upstream VLC and LibVLCSharp source snapshots accompany binary releases.
+The build copies only a clean publish tree, forces a blank Client ID, rejects account/debug files, and verifies native executable/runtime/VLC architecture. GitHub Actions produces installers and ZIPs. Version tags create releases. Corresponding GlassPlayer source is the release tag; upstream VLC and LibVLCSharp source snapshots accompany binary releases in one dependency-source ZIP, with all download checksums in `SHA256SUMS.txt`.
 
 ## Local data and removal
 

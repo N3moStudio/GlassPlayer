@@ -1,6 +1,6 @@
 param(
     [ValidateSet('arm64','x64')][string]$Architecture = 'arm64',
-    [string]$Version = '0.2.0-preview.1',
+    [string]$Version = '0.2.0',
     [string]$DotNet = 'dotnet',
     [string]$InnoCompiler,
     [switch]$SkipInstaller
@@ -34,7 +34,4 @@ if (-not $SkipInstaller) {
     & $InnoCompiler "/DAppVersion=$Version" "/DArch=$Architecture" "/DPublishDir=$packageRoot" "/DOutputDir=$output" (Join-Path $repoRoot 'installer\GlassPlayer.iss')
     if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed' }
 }
-Get-ChildItem -LiteralPath $output -File | Where-Object Name -Like "GlassPlayer-$Version-windows-$Architecture-*" | ForEach-Object {
-    $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-    [IO.File]::WriteAllText(($_.FullName + '.sha256'), "$hash  $($_.Name)`n")
-}
+& (Join-Path $PSScriptRoot 'Write-Checksums.ps1') -Directory $output
