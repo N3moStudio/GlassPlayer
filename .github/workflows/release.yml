@@ -46,7 +46,7 @@ jobs:
       - name: Fetch verified upstream source archives
         shell: pwsh
         run: ./scripts/Get-UpstreamSources.ps1 -OutputDirectory release-assets
-      - name: Create preview release
+      - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" release-assets/* --verify-tag --prerelease --title "GlassPlayer $GITHUB_REF_NAME — Windows ARM64 and x64" --notes-file RELEASE-NOTES.md
+        run: gh release create "$GITHUB_REF_NAME" release-assets/* --verify-tag --latest --title "GlassPlayer $GITHUB_REF_NAME — Windows ARM64 and x64" --notes-file RELEASE-NOTES.md
