@@ -18,7 +18,7 @@ Run setup to install for your Windows account. It adds **GlassPlayer** to Start 
 
 Requirements: Windows 11, the appropriate CPU architecture, and Internet access for streaming. The application includes its .NET runtime. Microsoft's [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/) is needed only for temporary Spotify library sign-in.
 
-The **ARM64 application, .NET runtime and VLC libraries are native ARM64**. Inno Setup's short-lived installer uses Windows x64 compatibility on ARM. This preview is not code-signed, so Windows may identify its publisher as unknown. Compare downloads with the supplied SHA-256 checksum files.
+The **ARM64 application, .NET runtime and VLC libraries are native ARM64**. Inno Setup's short-lived installer uses Windows x86 compatibility on ARM. This preview is not code-signed, so Windows may identify its publisher as unknown. Compare downloads with the supplied SHA-256 checksum files.
 
 ## Spotify with a Free account
 

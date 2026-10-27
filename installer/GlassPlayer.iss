@@ -26,7 +26,6 @@ DefaultGroupName=GlassPlayer
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 MinVersion=10.0.22000
-SetupArchitecture=x64
 #if Arch == "arm64"
 ArchitecturesAllowed=arm64
 ArchitecturesInstallIn64BitMode=arm64

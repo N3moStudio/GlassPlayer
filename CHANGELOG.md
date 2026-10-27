@@ -35,4 +35,4 @@ First packaged release of N3moStudio's community fork of Jonzu00/GlassPlayer.
 - Selected-track activation, long-duration playback, ads, session refresh and clean-machine installation require their own acceptance checks; fixture results do not prove them.
 - Spotify stays running and still consumes memory/CPU. The Android client's Widevine playback engine was not ported to Windows.
 - The library protocol is unofficial and may change. Selected-track activation currently expects Spotify's English accessible button labels; unsupported or ambiguous controls produce an error instead of clicking another song.
-- Preview binaries are not Authenticode-signed. The application is native ARM64; the small Inno Setup installer runs through Windows x64 compatibility on ARM.
+- Preview binaries are not Authenticode-signed. The application is native ARM64; the small Inno Setup installer runs through Windows x86 compatibility on ARM.
