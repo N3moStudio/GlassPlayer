@@ -326,7 +326,7 @@ class Spotify : IProvider
 
     public async Task<string> PlayAsync(string uri, Track? track = null)
     {
-        if (Desktop != null) { await Desktop.OpenAsync(uri, track); return "Spotify desktop"; }
+        if (Desktop != null) throw new InvalidOperationException("Spotify Free tracks cannot play inside GlassPlayer. Use SoundCloud or local files for standalone playback.");
         // The SDK is created on demand. Never launch or fall back to the Spotify desktop app.
         if (Web != null)
         {

@@ -24,7 +24,7 @@ foreach ($file in @('GlassPlayer.exe','coreclr.dll','WebView2Loader.dll',"libvlc
 $config = Get-Content (Join-Path $packageRoot 'config.json') -Raw | ConvertFrom-Json
 if (-not [string]::IsNullOrEmpty($config.SPOTIFY_CLIENT_ID)) { throw 'Release config must have a blank Spotify Client ID' }
 $unexpected = Get-ChildItem -LiteralPath $packageRoot -Recurse -File | Where-Object {
-    $_.Name -match '^(session\.bin|settings\.json|audio\.log|crash\.log|Cookies|Login Data)$' -or $_.Extension -eq '.pdb'
+    $_.Name -match '^(session\.bin|settings\.json|saved-imports\.json|audio\.log|crash\.log|Cookies|Login Data)$' -or $_.Extension -eq '.pdb'
 }
 if ($unexpected) { throw 'Release contains local account, debug, or diagnostic files' }
 foreach ($name in @('LICENSE','CREDITS.md','THIRD-PARTY-NOTICES.md','README.md','CHANGELOG.md')) {

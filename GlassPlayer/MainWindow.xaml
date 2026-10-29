@@ -4,10 +4,10 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
         Title="GlassPlayer" Width="1020" Height="660" MinWidth="860" MinHeight="580"
-        WindowStyle="None" Background="Transparent" Foreground="White"
+        WindowStyle="None" AllowsTransparency="True" Background="Transparent" Foreground="White"
         FontFamily="Segoe UI Variable Display, Segoe UI" TextOptions.TextFormattingMode="Ideal">
     <WindowChrome.WindowChrome>
-        <WindowChrome CaptionHeight="48" GlassFrameThickness="-1" ResizeBorderThickness="6" CornerRadius="0" UseAeroCaptionButtons="False"/>
+        <WindowChrome CaptionHeight="48" GlassFrameThickness="0" ResizeBorderThickness="6" CornerRadius="0" UseAeroCaptionButtons="False"/>
     </WindowChrome.WindowChrome>
 
     <Window.Triggers>
@@ -36,11 +36,11 @@
 
     <Window.Resources>
         <LinearGradientBrush x:Key="GlassFill" StartPoint="0,0" EndPoint="1,1">
-            <GradientStop Color="#2CFFFFFF" Offset="0"/>
-            <GradientStop Color="#0AFFFFFF" Offset="1"/>
+            <GradientStop Color="#12FFFFFF" Offset="0"/>
+            <GradientStop Color="#04FFFFFF" Offset="1"/>
         </LinearGradientBrush>
         <LinearGradientBrush x:Key="GlassEdge" StartPoint="0,0" EndPoint="1,1">
-            <GradientStop Color="#8CFFFFFF" Offset="0"/>
+            <GradientStop Color="#50FFFFFF" Offset="0"/>
             <GradientStop Color="#14FFFFFF" Offset=".5"/>
             <GradientStop Color="#4DFFFFFF" Offset="1"/>
         </LinearGradientBrush>
@@ -303,8 +303,10 @@
         </Style>
     </Window.Resources>
 
-    <Grid>
-        <Grid x:Name="Ambient" IsHitTestVisible="False" ClipToBounds="True">
+    <Grid x:Name="WindowSurface" SizeChanged="WindowSurface_SizeChanged">
+        <Border x:Name="GlassBackdrop" Background="#9910141C" CornerRadius="24"/>
+        <Border BorderBrush="#40FFFFFF" BorderThickness="1" CornerRadius="24" IsHitTestVisible="False"/>
+        <Grid x:Name="Ambient" Opacity=".18" IsHitTestVisible="False" ClipToBounds="True">
             <Ellipse Width="780" Height="780" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="-320,-360,0,0">
                 <Ellipse.Fill>
                     <RadialGradientBrush>
@@ -383,7 +385,15 @@
                                 <Button Style="{StaticResource Action}" Content="Show Spotify" Click="ShowSpotify_Click"/>
                                 <Button Style="{StaticResource Action}" Content="Hide to tray" Click="HideSpotify_Click" Margin="8,0,0,0"/>
                             </StackPanel>
-                            <TextBlock Text="Actual Spotify audio · Free accounts supported through the desktop app" FontSize="12" Opacity=".7" TextWrapping="Wrap" Margin="0,8,0,0"/>
+                            <TextBlock Text="Library references. Spotify audio requires its desktop app; browsing here never opens it." FontSize="12" Opacity=".85" TextWrapping="Wrap" Margin="0,8,0,0"/>
+                            <Button x:Name="FindSoundCloudButton" Style="{StaticResource Action}" Content="Find selected on SoundCloud" IsEnabled="False" Click="FindSoundCloud_Click" Margin="0,8,0,0"/>
+                        </StackPanel>
+                        <StackPanel x:Name="SavedBar" Grid.Row="0" Margin="0,0,0,12">
+                            <TextBlock Text="Your music · no Spotify app needed" FontSize="15" FontWeight="SemiBold"/>
+                            <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                <Button Style="{StaticResource Action}" Content="Saved imports" Click="SavedImports_Click"/>
+                                <Button x:Name="SaveImportButton" Style="{StaticResource Action}" Content="Save list" Click="SaveImport_Click" Margin="8,0,0,0" IsEnabled="False"/>
+                            </StackPanel>
                         </StackPanel>
                         <Grid Grid.Row="1" Margin="0,0,0,8">
                             <Grid.ColumnDefinitions>
@@ -417,7 +427,7 @@
                                 </DataTemplate>
                             </ListBox.ItemTemplate>
                         </ListBox>
-                        <TextBlock x:Name="Status" Grid.Row="3" Text="Search for a song or artist." Opacity=".6" TextWrapping="Wrap" Margin="4,8,4,0"/>
+                        <TextBlock x:Name="Status" Grid.Row="3" Text="Search for a song or artist." Opacity=".85" TextWrapping="Wrap" Margin="4,8,4,0"/>
                     </Grid>
                 </Border>
 
@@ -468,7 +478,7 @@
                         </Grid>
 
                         <TextBlock Style="{StaticResource Section}" Text="Spotify"/>
-                        <TextBlock Text="Sign in to the Spotify desktop app and start a song. GlassPlayer controls its actual audio, including Free-account playback and ads." FontSize="13" TextWrapping="Wrap" Opacity=".8" Margin="0,8,0,12"/>
+                        <TextBlock Text="SoundCloud and local files play inside GlassPlayer. Spotify playlists are references: Free Spotify audio still needs the Spotify desktop app. Show Spotify explicitly opens it and connects its controls." FontSize="13" TextWrapping="Wrap" Opacity=".85" Margin="0,8,0,12"/>
                         <StackPanel Orientation="Horizontal">
                             <Button Style="{StaticResource Action}" Content="Show Spotify" Click="ShowSpotify_Click"/>
                             <Button Style="{StaticResource Action}" Content="Hide to tray" Click="HideSpotify_Click" Margin="8,0,0,0"/>
@@ -517,7 +527,7 @@
                         <Grid Margin="0,14,0,0">
                             <StackPanel Margin="0,0,64,0">
                                 <TextBlock Text="Keep Spotify in the tray" FontSize="14"/>
-                                <TextBlock Text="Its audio engine stays running. Restore it from the GlassPlayer tray icon." FontSize="12" Opacity=".6" TextWrapping="Wrap"/>
+                                <TextBlock Text="Only after you choose Show Spotify. This hides its window; Spotify still runs." FontSize="12" Opacity=".85" TextWrapping="Wrap"/>
                             </StackPanel>
                             <ToggleButton x:Name="HideSpotifyToggle" Tag="HideSpotify" Style="{StaticResource Switch}" HorizontalAlignment="Right" VerticalAlignment="Center" Click="Setting_Click"/>
                         </Grid>
@@ -530,6 +540,13 @@
                         </Grid>
 
                         <TextBlock Style="{StaticResource Section}" Text="Appearance"/>
+                        <TextBlock Text="Glass tint" FontSize="14" Margin="0,6,0,0"/>
+                        <TextBlock Text="Less tint shows more of your desktop. Increase it for readability on bright backgrounds." FontSize="12" Opacity=".85" TextWrapping="Wrap" Margin="0,4,0,8"/>
+                        <Slider x:Name="GlassTintSlider" Minimum="25" Maximum="95" Value="60" TickFrequency="5" SmallChange="5" LargeChange="10" AutomationProperties.Name="Glass background tint" ValueChanged="GlassTint_ValueChanged"/>
+                        <Grid Margin="0,4,0,8">
+                            <TextBlock Text="More see-through" FontSize="12" Opacity=".85"/>
+                            <TextBlock x:Name="GlassTintLabel" HorizontalAlignment="Right" FontSize="12" Opacity=".85"/>
+                        </Grid>
                         <Grid Margin="0,6,0,0">
                             <StackPanel VerticalAlignment="Center" Margin="0,0,64,0">
                                 <TextBlock Text="Ambient glow" FontSize="14"/>

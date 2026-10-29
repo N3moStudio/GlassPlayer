@@ -393,11 +393,33 @@ class LocalFiles : IProvider
 /// <summary>Imports a playlist or song from a YouTube, YouTube Music or SoundCloud link.</summary>
 static class Importer
 {
+    internal static string SourceFromLink(string link)
+    {
+        if (!Uri.TryCreate(link, UriKind.Absolute, out var uri) || uri.Scheme != "https" || !string.IsNullOrEmpty(uri.UserInfo))
+            throw new ArgumentException("Paste an HTTPS playlist or song link.");
+        return uri.Host.ToLowerInvariant() switch
+        {
+            "soundcloud.com" or "www.soundcloud.com" or "on.soundcloud.com" => "SoundCloud",
+            "youtube.com" or "www.youtube.com" or "music.youtube.com" or "youtu.be" => "YouTube Music",
+            "open.spotify.com" => "Spotify",
+            _ => throw new ArgumentException("Paste a link from YouTube, SoundCloud or Spotify.")
+        };
+    }
+
+    internal static string TitleFromLink(string link) => Uri.TryCreate(link, UriKind.Absolute, out var uri)
+        ? Uri.UnescapeDataString(uri.Segments.LastOrDefault()?.Trim('/') ?? "Imported music").Replace('-', ' ')
+        : "Imported music";
+
     public static async Task<List<Track>> FromLinkAsync(string url)
     {
-        bool sc = url.Contains("soundcloud.com", StringComparison.OrdinalIgnoreCase);
+        bool sc = SourceFromLink(url) == "SoundCloud";
         await Dlp.EnsureAsync();
-        var output = await Dlp.RunAsync($"-j {(sc ? "" : "--flat-playlist ")}--no-warnings --playlist-end 100 \"{url.Replace("\"", "")}\"", allowPartial: true);
+        var output = await Dlp.RunAsync($"-j {(sc ? "" : "--flat-playlist ")}--no-warnings --skip-download -- \"{new Uri(url).AbsoluteUri}\"", allowPartial: false);
+        return ParseOutput(output, sc);
+    }
+
+    internal static List<Track> ParseOutput(string output, bool sc)
+    {
         var list = new List<Track>();
         foreach (var line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
         {
@@ -410,7 +432,7 @@ static class Importer
                 if (art == null && e.TryGetProperty("thumbnails", out var th) && th.ValueKind == JsonValueKind.Array && th.GetArrayLength() > 0)
                     art = th[th.GetArrayLength() - 1].GetProperty("url").GetString();
                 int ms = e.TryGetProperty("duration", out var du) && du.ValueKind == JsonValueKind.Number ? (int)(du.GetDouble() * 1000) : 0;
-                string artist = (S("uploader") ?? S("channel") ?? "").Replace(" - Topic", "");
+                string artist = (S("artist") ?? S("uploader") ?? S("channel") ?? "").Replace(" - Topic", "");
                 list.Add(new Track(e.GetProperty("id").ToString(), S("title") ?? "", artist, art, sc ? "" : null,
                     sc ? "SoundCloud" : "YouTube Music", sc ? S("webpage_url") : null, ms));
             }

@@ -1,6 +1,6 @@
 param(
     [ValidateSet('arm64','x64')][string]$Architecture = 'arm64',
-    [string]$Version = '0.2.0',
+    [string]$Version = '0.3.0',
     [string]$DotNet = 'dotnet',
     [string]$InnoCompiler,
     [switch]$SkipInstaller

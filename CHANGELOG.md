@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.0 — Unreleased
+
+- Standalone SoundCloud-first startup. Spotify library entries are references; selection no longer opens Spotify or invokes its Play button. Optional desktop controls begin only after an explicit Show Spotify action.
+- Find a selected Spotify song on SoundCloud with an explicit search and user choice of recording.
+- Clear per-pixel window transparency with a persistent 25–95% background-tint slider, subtler optional glow, and smaller cover art at short window heights so transport and volume remain visible.
+- Save imported lists and search results locally with order, duplicates, titles, artist names and artwork links; exclude temporary stream tokens and preserve a damaged library instead of overwriting it.
+- Remove the 100-track import cap, reject lookalike import hosts, preserve original artist metadata, and surface incomplete import failures.
+- Keep the playback queue stable while browsing and prevent an earlier slow-loading track from replacing a newer selection.
+- Account-free fixtures and offscreen WPF previews cover startup, reference selection, metadata persistence and minimum-size layout. Public SoundCloud metadata search/import checked without account sign-in, desktop control or audio playback. Live composition, audio and interaction acceptance remains unverified.
+
 ## 0.2.0 — 2026-10-26
 
 First packaged release of N3moStudio's community fork of Jonzu00/GlassPlayer.

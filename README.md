@@ -20,23 +20,31 @@ Requirements: Windows 11, the appropriate CPU architecture, and Internet access 
 
 The **ARM64 application, .NET runtime and VLC libraries are native ARM64**. Inno Setup's short-lived installer uses Windows x86 compatibility on ARM. The application is not code-signed, so Windows may identify its publisher as unknown. `SHA256SUMS.txt` lists checksums for all downloads. The dependency-source ZIP and GitHub's automatic source-code archives are for developers; you only need the installer for your PC.
 
-## Spotify with a Free account
+## Standalone playback and glass appearance (0.3.0 source)
 
-Spotify supplies the audio through its official desktop application. GlassPlayer supplies the custom interface and controls. Spotify continues running in the background; hiding its window does **not** eliminate its CPU or RAM usage. Ads and account restrictions remain in effect.
+The current published release is 0.2.0. These changes are in the 0.3.0 development build.
 
-1. Install [Spotify for Windows](https://www.spotify.com/download/windows/), sign in, and start a song on this PC.
-2. Open GlassPlayer. It reads Spotify's Windows media session for the actual title, artwork, playback state and available controls.
-3. Open Settings → **Connect library**. Sign in to the **same Spotify account** in the temporary window. It closes when the library session is captured.
-4. Choose **My playlists**, open a playlist, and select a song. GlassPlayer opens that track in Spotify, invokes its exact Play control when available, and checks the reported playback state.
-5. Choose **Hide to tray**. The GlassPlayer tray menu can restore Spotify or GlassPlayer. Closing GlassPlayer restores Spotify windows it hid.
+GlassPlayer starts on **SoundCloud**. Search for a track or import a public SoundCloud playlist link; choose a song to play it in GlassPlayer's own audio engine. You can also import local audio files. Neither path requires the Spotify application. Choose **Save list** to keep the imported metadata, then **Saved imports** to reopen it after browsing or restarting. Track order, duplicate songs, names and artwork links are preserved; stream authorization tokens are not saved. The former 100-track import cap is removed. Import errors are reported instead of silently accepting incomplete output.
 
-**No developer Client ID or Client Secret is needed for this mode.** The distributed `config.json` is blank. The desktop and library connections are separate sign-ins.
+The background uses real per-pixel window transparency. Adjust **Settings → Glass tint** from 25% to 95%; this changes the dark background only, leaving controls and artwork opaque. Increase tint over bright or busy desktop content. Ambient glow is optional and much lighter than before. This clear-glass mode does not blur the desktop. Windows composition, GPU performance, resizing and accessibility on a real desktop still need acceptance testing.
 
-Playlist browsing is **experimental** and uses Spotify's unofficial web-library protocol. It can break when Spotify changes the service. A library request may briefly create a hidden temporary window to refresh an expired session, then dispose it. If interactive sign-in is required, reconnect in Settings. No persistent GlassPlayer browser is used for Spotify audio.
+SoundCloud's existing connection is unofficial and can change. A public link does not guarantee a full playable track: availability, regional restrictions and Go+ requirements still apply. Importing a playlist does not unlock restricted songs.
 
-Selected-track activation currently expects Spotify's English accessible Play-button labels. If Spotify refuses the action, shows an ad, or exposes an ambiguous/localized control, GlassPlayer reports the problem instead of pressing another song's control. Spotify may briefly become visible while opening a selected track. Ordinary playback controls use Windows media sessions; volume changes Spotify's own audio session on the default output.
+## Spotify library and optional desktop controls
 
-The tested desktop installation is Spotify's standard Windows download. Microsoft Store installations and non-English Spotify interfaces have not completed acceptance testing.
+Spotify Free does **not** provide standalone audio in GlassPlayer. The supported embedded Spotify player and selected-track Web API require Premium. The old workaround opened Spotify, pressed its accessible Play button and hid the window; that automation has been removed.
+
+**Connect library** in Settings uses a temporary Spotify sign-in window to load your playlists, Liked Songs and search results without a developer Client ID. Browsing or selecting these entries never launches Spotify or starts playback. Choose **Find selected on SoundCloud** to search for the artist and title, then review and select a SoundCloud recording yourself. Versions, artwork and availability can differ; GlassPlayer does not silently substitute audio.
+
+The unofficial library session can expire; reconnect in Settings when needed. No persistent GlassPlayer browser is used for Spotify audio. Selecting the Spotify tab does not take control of another music session or hide any windows.
+
+**Show Spotify** remains an explicit optional action. It opens the installed Spotify desktop app and connects Windows media-session controls for pause, resume, next, previous and seeking when Spotify permits them. These controls require Spotify to remain running. Ads and account restrictions remain. Hide to tray only hides its window; GlassPlayer restores windows it hid when it closes. If you want Spotify completely closed, use SoundCloud or local files instead.
+
+### Moving playlists to SoundCloud
+
+[Soundiiz's Spotify-to-SoundCloud transfer](https://soundiiz.com/tutorial/spotify-to-soundcloud) matches tracks in the destination catalog and leaves the Spotify originals in place. Its Free plan currently transfers one playlist at a time with up to 200 selected tracks per playlist. [Playlist cover copying](https://support.soundiiz.com/hc/en-us/articles/11147026144914-How-to-Change-or-Transfer-a-Playlist-Cover-with-Soundiiz) is best effort; the destination recordings determine track titles, artist metadata and album artwork. Exact recordings are not guaranteed, and [some SoundCloud tracks require Go+](https://help.soundcloud.com/hc/en-us/articles/31353227038747-Soundcloud-Go-General-FAQs).
+
+After transferring and reviewing a playlist, import its public SoundCloud link in GlassPlayer and save the list. Private/authenticated SoundCloud playlist import is not supported by this connection. GlassPlayer does not perform the account-to-account transfer itself.
 
 ## Changes from upstream
 
@@ -51,9 +59,9 @@ See [CHANGELOG.md](CHANGELOG.md) for the release description and [CREDITS.md](CR
 
 ## Validation and limits
 
-Local Windows ARM64 testing passed 24 checks, including real native VLC silent-PCM decode/pause/seek/resume and Windows media-session initialization. A signed-in Spotify account loaded more than 100 library entries and playlist tracks; resuming Spotify playback while its window was hidden was observed. No GlassPlayer library-browser process remained after sign-in.
+The 0.3.0 checks cover account-free fixtures, saved playlist metadata, more-than-100-track parsing, rejecting invalid import hosts, no Spotify launch during reference selection, and offscreen WPF rendering at default and minimum sizes. Live public SoundCloud search and one CC-BY track import returned title, artist, artwork and duration successfully. No desktop input, signed-in account testing or audible playback was used for this change. Offscreen images verify layout and alpha output; they do not prove live desktop composition, window resizing, audio output or long-duration playback.
 
-CI runs account-free fixtures and checks packaged binary architecture. On the development ARM64 PC, installation, Start menu/Installed apps registration, configuration-preserving upgrade, uninstall and reinstall checks passed, along with packaged startup, single-instance activation and clean shutdown. These checks do not prove Spotify account access, audible output, long-duration playback, advertisements, refresh after expiry, or every track's availability. Selected-track activation still needs real-account acceptance testing.
+The 0.2.0 historical installation and real-account validation is documented in the changelog. Those results do not establish acceptance for this build. CI runs account-free fixtures and checks packaged binary architecture.
 
 [Stopify](https://github.com/Anattana-Labs/Stopify) uses Android Media3 and the platform's Widevine DRM support. GlassPlayer's Windows audio backend does not provide that Android system. This fork adapts library/session ideas but does not port the Android audio decoder or provide an independent Free-account Spotify streaming engine. See [Android's DRM documentation](https://developer.android.com/media/media3/exoplayer/drm).
 
@@ -78,6 +86,7 @@ The build copies only a clean publish tree, forces a blank Client ID, rejects ac
 
 - Application: `%LocalAppData%\Programs\GlassPlayer`
 - Settings: `%AppData%\GlassPlayer\settings.json`
+- Saved imports: `%AppData%\GlassPlayer\saved-imports.json`
 - Library session/profile: `%LocalAppData%\GlassPlayer\spotify-library`
 - Earlier encrypted API authorization: `%AppData%\GlassPlayer\spotify-v4-*.bin`
 - Diagnostics and media cache: `%LocalAppData%\GlassPlayer`

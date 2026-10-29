@@ -6,6 +6,20 @@ using System.Text;
 using System.Text.Json;
 using GlassPlayer;
 
+if (args.Length == 2 && args[0] == "--render-ui")
+{
+    await UiPreview.RenderAsync(args[1]);
+    return 0;
+}
+
+if (args.Contains("--soundcloud-metadata-check"))
+{
+    var results = await new SoundCloud().SearchAsync("Scott Buckley Convergence");
+    var imported = await Importer.FromLinkAsync("https://soundcloud.com/scottbuckley/convergence-cc-by");
+    Console.WriteLine(JsonSerializer.Serialize(new { searchResults = results.Count, imported = imported.Select(t => new { t.Title, t.Artist, hasArtwork = t.Art != null, t.DurationMs }) }));
+    return results.Count > 0 && imported.Count == 1 ? 0 : 1;
+}
+
 if (args.Contains("--live-library-check"))
 {
     var library = new SpotifyWebLibrary(new SpotifyWebSession());
@@ -225,6 +239,58 @@ tests.Add(("Web track parser excludes episodes and unavailable recordings", () =
     Check(SpotifyWebLibrary.ParseTrack(unavailable.RootElement) == null, "Unavailable track included");
     return Task.CompletedTask;
 }));
+
+tests.Add(("Spotify desktop selection never launches an app or sends a network command", async () =>
+{
+    var fake = new FakeHandler((_, _) => throw new Exception("Unexpected HTTP"));
+    using var desktop = new SpotifyDesktop();
+    var sp = new Spotify(new HttpClient(fake), ClientId, Store("no-launch"), "fixture") { Desktop = desktop };
+    await Fails(() => sp.PlayAsync("spotify:track:0123456789ABCDEFGHIJKL"), "standalone");
+    Check(fake.Calls == 0 && desktop.Current == null, "A playback connection was started");
+}));
+
+tests.Add(("Saved imports retain order, duplicate tracks, artwork and names but no stream tokens", () =>
+{
+    var library = new SavedLibrary(Path.Combine(temp, "saved.json"));
+    var tracks = Enumerable.Range(0, 150).Select(i => new Track(i.ToString(), "Title " + i, "Artist", "https://example.com/cover.png", "temporary-stream-token", "SoundCloud", "https://soundcloud.com/artist/song")).ToList();
+    tracks.Add(tracks[0]);
+    library.Save("My playlist", tracks);
+    var saved = library.Load().Single();
+    Check(saved.Title == "My playlist" && saved.Tracks.Count == 151 && saved.Tracks[149].Title == "Title 149", "Metadata or order lost");
+    Check(saved.Tracks.All(t => t.Preview == null && t.Art == tracks[0].Art), "Stream token retained or artwork lost");
+    library.Save("Renamed playlist", tracks);
+    Check(library.Load().Count == 1 && library.Load()[0].Title == "Renamed playlist", "Saving twice duplicated the same list");
+    return Task.CompletedTask;
+}));
+
+tests.Add(("Damaged saved library is not silently overwritten", async () =>
+{
+    var path = Path.Combine(temp, "damaged.json");
+    File.WriteAllText(path, "{bad json");
+    try { new SavedLibrary(path).Save("New", new[] { new Track("1", "A", "B", null, null, "Local", "a.wav") }); }
+    catch (JsonException) { }
+    Check(File.ReadAllText(path) == "{bad json", "Damaged library overwritten");
+    await Fails(() => Task.Run(() => new SavedLibrary(Path.Combine(temp, "references.json")).Save("Spotify", new[] { new Track("1", "A", "B", null, null, "Spotify", "spotify:track:1") })), "references");
+}));
+
+tests.Add(("Playlist import parses more than 100 tracks with original artist and artwork", () =>
+{
+    var output = string.Join('\n', Enumerable.Range(0, 175).Select(i => JsonSerializer.Serialize(new { id = i, title = "Song " + i, artist = "Actual artist", uploader = "Uploader", thumbnail = "https://example.com/art.png", webpage_url = "https://soundcloud.com/artist/song", duration = 123.5 })));
+    var tracks = Importer.ParseOutput(output, true);
+    Check(tracks.Count == 175 && tracks[^1].Title == "Song 174", "Playlist truncated");
+    Check(tracks.All(t => t.Artist == "Actual artist" && t.DurationMs == 123500 && t.Art != null), "Metadata lost");
+    return Task.CompletedTask;
+}));
+
+tests.Add(("Import links reject lookalike domains and non-HTTPS schemes", async () =>
+{
+    Check(Importer.SourceFromLink("https://soundcloud.com/artist/sets/list") == "SoundCloud", "Valid playlist rejected");
+    Check(Importer.SourceFromLink("https://on.soundcloud.com/example") == "SoundCloud", "Short link rejected");
+    foreach (var link in new[] { "https://evil.test/soundcloud.com", "https://soundcloud.com.evil.test/a", "file:///soundcloud.com", "http://soundcloud.com/a", "https://user@soundcloud.com/a" })
+        await Fails(() => Task.FromResult(Importer.SourceFromLink(link)), "Paste");
+}));
+
+tests.Add(("Offscreen UI stays standalone when selecting Spotify references", () => UiPreview.RenderAsync(Path.Combine(temp, "ui"))));
 
 if (!args.Contains("--ci"))
 {
