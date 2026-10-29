@@ -4,10 +4,10 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
         Title="GlassPlayer" Width="1020" Height="660" MinWidth="860" MinHeight="580"
-        WindowStyle="None" Background="Transparent" Foreground="White"
+        WindowStyle="None" AllowsTransparency="True" Background="Transparent" Foreground="White"
         FontFamily="Segoe UI Variable Display, Segoe UI" TextOptions.TextFormattingMode="Ideal">
     <WindowChrome.WindowChrome>
-        <WindowChrome CaptionHeight="48" GlassFrameThickness="-1" ResizeBorderThickness="6" CornerRadius="0" UseAeroCaptionButtons="False"/>
+        <WindowChrome CaptionHeight="48" GlassFrameThickness="0" ResizeBorderThickness="6" CornerRadius="0" UseAeroCaptionButtons="False"/>
     </WindowChrome.WindowChrome>
 
     <Window.Triggers>
@@ -36,11 +36,11 @@
 
     <Window.Resources>
         <LinearGradientBrush x:Key="GlassFill" StartPoint="0,0" EndPoint="1,1">
-            <GradientStop Color="#2CFFFFFF" Offset="0"/>
-            <GradientStop Color="#0AFFFFFF" Offset="1"/>
+            <GradientStop Color="#12FFFFFF" Offset="0"/>
+            <GradientStop Color="#04FFFFFF" Offset="1"/>
         </LinearGradientBrush>
         <LinearGradientBrush x:Key="GlassEdge" StartPoint="0,0" EndPoint="1,1">
-            <GradientStop Color="#8CFFFFFF" Offset="0"/>
+            <GradientStop Color="#50FFFFFF" Offset="0"/>
             <GradientStop Color="#14FFFFFF" Offset=".5"/>
             <GradientStop Color="#4DFFFFFF" Offset="1"/>
         </LinearGradientBrush>
@@ -303,8 +303,10 @@
         </Style>
     </Window.Resources>
 
-    <Grid>
-        <Grid x:Name="Ambient" IsHitTestVisible="False" ClipToBounds="True">
+    <Grid x:Name="WindowSurface" SizeChanged="WindowSurface_SizeChanged">
+        <Border x:Name="GlassBackdrop" Background="#9910141C" CornerRadius="24"/>
+        <Border BorderBrush="#40FFFFFF" BorderThickness="1" CornerRadius="24" IsHitTestVisible="False"/>
+        <Grid x:Name="Ambient" Opacity=".18" IsHitTestVisible="False" ClipToBounds="True">
             <Ellipse Width="780" Height="780" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="-320,-360,0,0">
                 <Ellipse.Fill>
                     <RadialGradientBrush>
@@ -355,6 +357,7 @@
                 <StackPanel Orientation="Horizontal">
                     <RadioButton x:Name="SoundCloudBtn" Style="{StaticResource Pill}" Content="SoundCloud" Tag="SoundCloud" Checked="Provider_Checked"/>
                     <RadioButton x:Name="SpotifyBtn" Style="{StaticResource Pill}" Content="Spotify" Tag="Spotify" Checked="Provider_Checked"/>
+                    <RadioButton x:Name="YouTubeBtn" Style="{StaticResource Pill}" Content="YouTube Music" Tag="YouTube Music" Checked="Provider_Checked"/>
                 </StackPanel>
             </Border>
 
@@ -380,18 +383,31 @@
                                 <Button Style="{StaticResource Action}" Content="Connect / Settings" Click="Settings_Click" Margin="8,0,0,0"/>
                             </StackPanel>
                             <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
-                                <Button Style="{StaticResource Action}" Content="Show Spotify" Click="ShowSpotify_Click"/>
-                                <Button Style="{StaticResource Action}" Content="Hide to tray" Click="HideSpotify_Click" Margin="8,0,0,0"/>
+                                <Button x:Name="SyncPlaylistsButton" Style="{StaticResource Action}" Content="Sync playlists" Click="SyncPlaylists_Click" ToolTip="Save or refresh playlists from your connected account on this PC"/>
+                                <Button x:Name="CancelSyncButton" Style="{StaticResource Action}" Content="Cancel sync" Click="CancelSync_Click" Visibility="Collapsed" Margin="8,0,0,0"/>
                             </StackPanel>
-                            <TextBlock Text="Actual Spotify audio · Free accounts supported through the desktop app" FontSize="12" Opacity=".7" TextWrapping="Wrap" Margin="0,8,0,0"/>
+                            <TextBlock Text="Your playlists, with matching audio inside GlassPlayer. Spotify stays closed." FontSize="12" Opacity=".85" TextWrapping="Wrap" Margin="0,8,0,0"/>
+                            <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                <Button x:Name="FindSoundCloudButton" Style="{StaticResource Action}" Content="Find on SoundCloud" IsEnabled="False" Click="FindSoundCloud_Click"/>
+                                <Button x:Name="SaveSpotifyListButton" Style="{StaticResource Action}" Content="Save list" IsEnabled="False" Click="SaveImport_Click" Margin="8,0,0,0"/>
+                            </StackPanel>
+                        </StackPanel>
+                        <StackPanel x:Name="SavedBar" Grid.Row="0" Margin="0,0,0,12">
+                            <TextBlock Text="Your music · no Spotify app needed" FontSize="15" FontWeight="SemiBold"/>
+                            <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                <Button Style="{StaticResource Action}" Content="Saved imports" Click="SavedImports_Click"/>
+                                <Button x:Name="SaveImportButton" Style="{StaticResource Action}" Content="Save list" Click="SaveImport_Click" Margin="8,0,0,0" IsEnabled="False"/>
+                            </StackPanel>
                         </StackPanel>
                         <Grid Grid.Row="1" Margin="0,0,0,8">
+                            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition/>
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
                             <TextBox x:Name="SearchBox" Style="{StaticResource Search}" Tag="Songs, artists" KeyDown="Search_KeyDown"/>
                             <Button Grid.Column="1" Style="{StaticResource Action}" Content="Import" Margin="8,0,0,0" Click="Import_Click"/>
+                            <Button x:Name="FindYouTubeButton" Grid.Row="1" Grid.ColumnSpan="2" Style="{StaticResource Action}" Content="Find on YouTube" IsEnabled="False" Click="FindYouTube_Click" Margin="0,8,0,0"/>
                         </Grid>
                         <ListBox x:Name="List" Grid.Row="2" Background="Transparent" BorderThickness="0" Foreground="White"
                      ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.VerticalScrollBarVisibility="Hidden" ScrollViewer.CanContentScroll="True" VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling" VirtualizingPanel.ScrollUnit="Pixel" SelectionChanged="List_SelectionChanged">
@@ -417,7 +433,7 @@
                                 </DataTemplate>
                             </ListBox.ItemTemplate>
                         </ListBox>
-                        <TextBlock x:Name="Status" Grid.Row="3" Text="Search for a song or artist." Opacity=".6" TextWrapping="Wrap" Margin="4,8,4,0"/>
+                        <TextBlock x:Name="Status" Grid.Row="3" Text="Search for a song or artist." Opacity=".85" TextWrapping="Wrap" Margin="4,8,4,0"/>
                     </Grid>
                 </Border>
 
@@ -435,7 +451,8 @@
                             </Border.RenderTransform>
                         </Border>
                         <TextBlock x:Name="TitleText" Text="Nothing playing" FontSize="26" FontWeight="SemiBold" TextAlignment="Center" TextTrimming="CharacterEllipsis"/>
-                        <TextBlock x:Name="ArtistText" Text="Pick a track from the list" FontSize="16" Opacity=".6" TextAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,2,0,22"/>
+                        <TextBlock x:Name="ArtistText" Text="Pick a track from the list" FontSize="16" Opacity=".6" TextAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,2,0,4"/>
+                        <TextBlock x:Name="SourceText" FontSize="12" Opacity=".85" TextAlignment="Center" Margin="0,0,0,6"/>
                         <Slider x:Name="Seek" Style="{StaticResource Seek}" IsMoveToPointEnabled="True" Minimum="0" Maximum="1" ValueChanged="Seek_ValueChanged"/>
                         <Grid Margin="0,2,0,10">
                             <TextBlock x:Name="Cur" Text="0:00" FontSize="12" Opacity=".6"/>
@@ -468,12 +485,12 @@
                         </Grid>
 
                         <TextBlock Style="{StaticResource Section}" Text="Spotify"/>
-                        <TextBlock Text="Sign in to the Spotify desktop app and start a song. GlassPlayer controls its actual audio, including Free-account playback and ads." FontSize="13" TextWrapping="Wrap" Opacity=".8" Margin="0,8,0,12"/>
+                        <TextBlock Text="Browse and save your Spotify playlists, then play matching YouTube audio inside GlassPlayer. Original names and artwork stay in your library. Show Spotify opens its separate desktop controls only when you choose it." FontSize="13" TextWrapping="Wrap" Opacity=".85" Margin="0,8,0,12"/>
                         <StackPanel Orientation="Horizontal">
                             <Button Style="{StaticResource Action}" Content="Show Spotify" Click="ShowSpotify_Click"/>
                             <Button Style="{StaticResource Action}" Content="Hide to tray" Click="HideSpotify_Click" Margin="8,0,0,0"/>
                         </StackPanel>
-                        <TextBlock Text="Connect library below to browse playlists here. Use the same account as the desktop app. This experimental connection needs no Client ID; its sign-in window closes afterward." FontSize="12" TextWrapping="Wrap" Opacity=".7" Margin="0,10,0,4"/>
+                        <TextBlock Text="Connect your own account below, then choose Sync playlists on the Spotify tab. This saves names, covers and song lists on your PC. Sync again to refresh them. This experimental connection needs no Client ID; its sign-in window closes afterward." FontSize="12" TextWrapping="Wrap" Opacity=".7" Margin="0,10,0,4"/>
                         <TextBlock x:Name="BuildDetail" FontSize="12" Opacity=".65" Margin="0,4,0,8"/>
 
                         <Border CornerRadius="18" Background="#14FFFFFF" Padding="14" Margin="0,4,0,8">
@@ -507,6 +524,13 @@
                         </Border>
 
                         <TextBlock Style="{StaticResource Section}" Text="Playback"/>
+                        <Grid Margin="0,6,0,14">
+                            <StackPanel Margin="0,0,64,0">
+                                <TextBlock Text="Use matching YouTube audio" FontSize="14"/>
+                                <TextBlock Text="For Spotify songs and unavailable SoundCloud audio. Keeps your names and covers; shows the audio source. Uncertain matches need your choice." FontSize="12" Opacity=".85" TextWrapping="Wrap"/>
+                            </StackPanel>
+                            <ToggleButton x:Name="YouTubeMatchesToggle" Tag="YouTubeMatches" Style="{StaticResource Switch}" HorizontalAlignment="Right" VerticalAlignment="Center" Click="Setting_Click"/>
+                        </Grid>
                         <Grid Margin="0,6,0,0">
                             <StackPanel VerticalAlignment="Center" Margin="0,0,64,0">
                                 <TextBlock Text="Autoplay next track" FontSize="14"/>
@@ -517,9 +541,16 @@
                         <Grid Margin="0,14,0,0">
                             <StackPanel Margin="0,0,64,0">
                                 <TextBlock Text="Keep Spotify in the tray" FontSize="14"/>
-                                <TextBlock Text="Its audio engine stays running. Restore it from the GlassPlayer tray icon." FontSize="12" Opacity=".6" TextWrapping="Wrap"/>
+                                <TextBlock Text="Only after you choose Show Spotify. This hides its window; Spotify still runs." FontSize="12" Opacity=".85" TextWrapping="Wrap"/>
                             </StackPanel>
                             <ToggleButton x:Name="HideSpotifyToggle" Tag="HideSpotify" Style="{StaticResource Switch}" HorizontalAlignment="Right" VerticalAlignment="Center" Click="Setting_Click"/>
+                        </Grid>
+                        <Grid Margin="0,14,0,0">
+                            <StackPanel Margin="0,0,64,0">
+                                <TextBlock Text="Silence detected Spotify ads" FontSize="14"/>
+                                <TextBlock Text="Mutes recognized ads while using Spotify controls. Ads still take time; Spotify must be running. Some ads may not be detected." FontSize="12" Opacity=".85" TextWrapping="Wrap"/>
+                            </StackPanel>
+                            <ToggleButton x:Name="SilenceAdsToggle" Tag="SilenceAds" Style="{StaticResource Switch}" HorizontalAlignment="Right" VerticalAlignment="Center" Click="Setting_Click"/>
                         </Grid>
                         <Grid Margin="0,14,0,0">
                             <StackPanel VerticalAlignment="Center" Margin="0,0,64,0">
@@ -530,6 +561,13 @@
                         </Grid>
 
                         <TextBlock Style="{StaticResource Section}" Text="Appearance"/>
+                        <TextBlock Text="Glass tint" FontSize="14" Margin="0,6,0,0"/>
+                        <TextBlock Text="Less tint shows more of your desktop. Increase it for readability on bright backgrounds." FontSize="12" Opacity=".85" TextWrapping="Wrap" Margin="0,4,0,8"/>
+                        <Slider x:Name="GlassTintSlider" Minimum="25" Maximum="95" Value="60" TickFrequency="5" SmallChange="5" LargeChange="10" AutomationProperties.Name="Glass background tint" ValueChanged="GlassTint_ValueChanged"/>
+                        <Grid Margin="0,4,0,8">
+                            <TextBlock Text="More see-through" FontSize="12" Opacity=".85"/>
+                            <TextBlock x:Name="GlassTintLabel" HorizontalAlignment="Right" FontSize="12" Opacity=".85"/>
+                        </Grid>
                         <Grid Margin="0,6,0,0">
                             <StackPanel VerticalAlignment="Center" Margin="0,0,64,0">
                                 <TextBlock Text="Ambient glow" FontSize="14"/>

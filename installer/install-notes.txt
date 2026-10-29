@@ -5,11 +5,15 @@ This installer adds GlassPlayer to your Start menu and Windows Installed apps.
 It installs for your Windows account without administrator access.
 An optional desktop shortcut is available on the next page.
 
-Spotify playback requires the official Spotify desktop application and your own
-Spotify account. GlassPlayer can hide Spotify's window, but Spotify must keep
-running to supply audio. Spotify is not bundled or installed by this setup.
-The experimental playlist connector uses a temporary WebView2 sign-in window.
-Microsoft Edge WebView2 Runtime must be available for that feature.
+SoundCloud, YouTube Music and local audio play inside GlassPlayer. Spotify
+playlist entries use carefully matched YouTube audio; the Spotify desktop app
+does not need to be open. Some recordings may not have a playable match.
+
+To use your library, open Settings, choose Connect library and sign in to your
+own Spotify account. Then choose Spotify > Sync playlists. This saves playlist
+names, covers and song lists on this PC. Sync again to refresh Spotify changes.
+Sync does not change your Spotify playlists or connect other people's accounts.
+The experimental sign-in connection requires Microsoft Edge WebView2 Runtime.
 
 No Spotify Client ID, account session, or personal configuration is included.
 This is an independent GPL-3.0 community fork, not an official Spotify product.

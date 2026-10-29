@@ -2,7 +2,6 @@ using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
-using System.Windows.Automation;
 using Windows.Media.Control;
 using Windows.Storage.Streams;
 
@@ -19,7 +18,6 @@ sealed class SpotifyDesktop : IDisposable
     GlobalSystemMediaTransportControlsSession? session;
     readonly SemaphoreSlim refreshGate = new(1, 1);
     readonly SemaphoreSlim startGate = new(1, 1);
-    int openRequest;
     bool disposed;
     public State? Current { get; private set; }
     public event Action<State?>? Changed;
@@ -153,64 +151,6 @@ sealed class SpotifyDesktop : IDisposable
     {
         foreach (var window in hiddenWindows) if (IsWindow(window)) ShowWindowAsync(window, 4);
         hiddenWindows.Clear();
-    }
-
-    public async Task OpenAsync(string uri, Track? track = null)
-    {
-        ValidateUri(uri);
-        int request = Interlocked.Increment(ref openRequest);
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(12));
-        if (!Installed) throw new InvalidOperationException("Install the official Spotify desktop app first.");
-        Process.Start(new ProcessStartInfo(uri) { UseShellExecute = true });
-        await StartAsync();
-        // Spotify's URI handler navigates without necessarily starting playback.
-        // Invoke only the exact song's accessible Play button, never a global Play button.
-        // This short worker ends after selection; ordinary controls use media sessions.
-        await Task.Delay(700);
-        if (track == null) { await RefreshAsync(); return; }
-        bool invoked = false;
-        for (int attempt = 0; attempt < 16; attempt++)
-        {
-            if (disposed) return;
-            if (request != openRequest) throw new OperationCanceledException();
-            await RefreshAsync();
-            if (Current is { Playing: true } state && state.Title.Equals(track.Title, StringComparison.OrdinalIgnoreCase)) return;
-            if (!invoked)
-                try
-                {
-                    invoked = await Task.Run(() => InvokeTrackPlay(track,
-                        () => !disposed && request == openRequest && !timeout.IsCancellationRequested)).WaitAsync(timeout.Token);
-                }
-                catch (OperationCanceledException) when (request == openRequest)
-                { throw new InvalidOperationException("Spotify took too long to open this song. Use Show Spotify to check it."); }
-            await Task.Delay(500);
-        }
-        throw new InvalidOperationException("Spotify opened the song but did not start it. Use Show Spotify to check for an ad or press its Play button.");
-    }
-
-    internal static string PlayButtonName(Track track) => $"Play {track.Title} by {track.Artist}";
-    static bool InvokeTrackPlay(Track track, Func<bool> stillWanted)
-    {
-        foreach (var process in Process.GetProcessesByName("Spotify"))
-            using (process)
-            {
-                var window = process.MainWindowHandle;
-                if (window == IntPtr.Zero) continue;
-                try
-                {
-                    var root = AutomationElement.FromHandle(window);
-                    if (root.Current.ProcessId != process.Id) continue;
-                    var matches = root.FindAll(TreeScope.Descendants, new AndCondition(
-                        new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button),
-                        new PropertyCondition(AutomationElement.NameProperty, PlayButtonName(track))));
-                    if (matches.Count != 1) continue; // Ambiguous or localized UI: require the user to select it.
-                    var button = matches[0];
-                    if (button.Current.IsEnabled && button.TryGetCurrentPattern(InvokePattern.Pattern, out var pattern) && stillWanted())
-                    { ((InvokePattern)pattern).Invoke(); return true; }
-                }
-                catch (Exception ex) when (ex is ElementNotAvailableException or InvalidOperationException or COMException) { }
-            }
-        return false;
     }
 
     async Task Command(Func<GlobalSystemMediaTransportControlsSession, Task<bool>> command)

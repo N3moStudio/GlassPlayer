@@ -8,10 +8,17 @@ namespace GlassPlayer;
 class AppSettings
 {
     public bool Autoplay { get; set; } = true;
-    public bool AmbientGlow { get; set; } = true;
+    public bool AmbientGlow { get; set; } = false;
     public bool RememberVolume { get; set; } = true;
     public double Volume { get; set; } = 0.8;
     public bool HideSpotify { get; set; } = true;
+    public bool SilenceSpotifyAds { get; set; } = true;
+    public bool AllowYouTubeMatches { get; set; } = true;
+    // Tint only the backdrop; artwork and controls always stay fully opaque.
+    public double GlassTint { get; set; } = 0.60;
+    public string StartProvider { get; set; } = "SoundCloud";
+
+    public static double NormalizeTint(double value) => double.IsFinite(value) ? Math.Clamp(value, 0.25, 0.95) : 0.60;
 
     static readonly string File_ = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "GlassPlayer", "settings.json");
 
