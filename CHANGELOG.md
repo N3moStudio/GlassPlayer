@@ -2,13 +2,16 @@
 
 ## 0.3.0 — Unreleased
 
-- Standalone SoundCloud-first startup. Spotify library entries are references; selection no longer opens Spotify or invokes its Play button. Optional desktop controls begin only after an explicit Show Spotify action.
-- Find a selected Spotify song on SoundCloud with an explicit search and user choice of recording.
+- Standalone SoundCloud-first startup. Spotify playlist entries play carefully matched YouTube Music audio without opening Spotify or invoking its controls. Optional desktop controls begin only after an explicit Show Spotify action.
+- Match unavailable SoundCloud audio through YouTube Music using title, artist and bounded duration agreement. Preserve version names, reject ambiguous matches, and show the actual audio source without replacing playlist metadata. Add a matching toggle and manual YouTube search.
+- Save Spotify playlist metadata and preserve protected SoundCloud track metadata for later matching; protected SoundCloud audio is not decrypted.
 - Clear per-pixel window transparency with a persistent 25–95% background-tint slider, subtler optional glow, and smaller cover art at short window heights so transport and volume remain visible.
 - Save imported lists and search results locally with order, duplicates, titles, artist names and artwork links; exclude temporary stream tokens and preserve a damaged library instead of overwriting it.
+- Preserve exact imported playlist titles and independent playlist covers. Identify saved playlists by source link so separate lists with identical songs are not merged.
+- Best-effort Spotify ad silencing in optional desktop-controls mode, with conservative metadata detection and restoration of only app-owned mute changes. This does not skip ad time or provide standalone Spotify Free streaming.
 - Remove the 100-track import cap, reject lookalike import hosts, preserve original artist metadata, and surface incomplete import failures.
 - Keep the playback queue stable while browsing and prevent an earlier slow-loading track from replacing a newer selection.
-- Account-free fixtures and offscreen WPF previews cover startup, reference selection, metadata persistence and minimum-size layout. Public SoundCloud metadata search/import checked without account sign-in, desktop control or audio playback. Live composition, audio and interaction acceptance remains unverified.
+- Account-free fixtures and offscreen WPF previews cover startup, matching, ambiguity, cancellation, metadata persistence and minimum-size layout. Live MONTERO fallback passed muted native VLC decode, pause, seek and resume checks. Live desktop composition, audible quality, real ads and long-duration acceptance remain unverified.
 
 ## 0.2.0 — 2026-10-26
 

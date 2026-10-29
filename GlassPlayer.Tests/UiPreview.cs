@@ -26,7 +26,7 @@ static class UiPreview
                     System.Windows.Threading.Dispatcher.PushFrame(frame);
                 }
                 Directory.CreateDirectory(directory);
-                var settings = new AppSettings { AmbientGlow = false, GlassTint = .60 };
+                var settings = new AppSettings { AmbientGlow = false, GlassTint = .60, AllowYouTubeMatches = false };
                 var window = new MainWindow(settings, new SavedLibrary(Path.Combine(directory, "fixture-library.json")), connectLibrary: false);
                 T Element<T>(string name) where T : FrameworkElement => (T)window.FindName(name);
                 object? Field(object owner, string name) => owner.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(owner);
@@ -42,12 +42,24 @@ static class UiPreview
                 list.SelectedIndex = 0;
                 if (!Element<Button>("FindSoundCloudButton").IsEnabled || Field(window, "nowPlaying") != null || Field(Field(window, "desktop")!, "manager") != null)
                     throw new Exception("Selecting a Spotify reference initiated playback");
+                var youtube = new DeferredProvider { Results = new() { tracks[0] with { Id = "yt-fixture", Source = "YouTube Music", DurationMs = 180000 } } };
+                ((Dictionary<string, IProvider>)Field(window, "providers")!)["YouTube Music"] = youtube;
+                settings.AllowYouTubeMatches = true;
+                list.ItemsSource = new[] { tracks[0] with { DurationMs = 180000 } };
+                list.SelectedIndex = 0;
+                if (youtube.Pending.Count != 1 || ((Track?)Field(window, "nowPlaying"))?.Source != "Spotify"
+                    || Field(window, "activeSp") != null || Field(Field(window, "desktop")!, "manager") != null)
+                    throw new Exception("Spotify selection did not use standalone matching");
+                youtube.Pending[0].SetResult(null);
+                Drain();
+                if (!Element<TextBlock>("Status").Text.Contains("unavailable")) throw new Exception("Unavailable match not reported");
+                settings.AllowYouTubeMatches = false;
                 var fake = new DeferredProvider();
                 ((Dictionary<string, IProvider>)Field(window, "providers")!)["SoundCloud"] = fake;
                 var showTracks = typeof(MainWindow).GetMethod("ShowTracks", BindingFlags.Instance | BindingFlags.NonPublic)!;
                 var first = new Track("first", "First", "Artist", null, null, "SoundCloud", null);
                 var second = first with { Id = "second", Title = "Second" };
-                showTracks.Invoke(window, new object?[] { new List<Track> { first, second }, "", "Queue" });
+                showTracks.Invoke(window, new object?[] { new List<Track> { first, second }, "", "Queue", null, null });
                 list.SelectedIndex = 0;
                 list.SelectedIndex = 1;
                 fake.Pending[0].SetException(new Exception("Stale failure"));
@@ -56,7 +68,7 @@ static class UiPreview
                     throw new Exception("Stale track result replaced the newer selection");
                 fake.Pending[1].SetResult(null);
                 Drain();
-                showTracks.Invoke(window, new object?[] { new List<Track> { first with { Id = "other", Title = "Other list" } }, "", "Other" });
+                showTracks.Invoke(window, new object?[] { new List<Track> { first with { Id = "other", Title = "Other list" } }, "", "Other", null, null });
                 typeof(MainWindow).GetMethod("Step", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, new object[] { 1 });
                 if (((Track)Field(window, "nowPlaying")!).Id != "first") throw new Exception("Browsing replaced the playback queue");
                 fake.Pending[2].SetResult(null);
@@ -65,6 +77,7 @@ static class UiPreview
                 list.ItemsSource = Enumerable.Range(1, 8).Select(i => new Track(i.ToString(), "Track " + i, "Artist name", null, null, "SoundCloud", null, 185000)).ToList();
                 Element<TextBlock>("TitleText").Text = "Your music, in glass";
                 Element<TextBlock>("ArtistText").Text = "SoundCloud · standalone playback";
+                Element<TextBlock>("SourceText").Text = "via YouTube Music";
                 Element<TextBlock>("Status").Text = "Preview using sample metadata. No music is playing.";
                 var surface = (FrameworkElement)window.Content;
                 void Render(string name, int width, int height)
@@ -111,7 +124,8 @@ sealed class DeferredProvider : IProvider
     public string Name => "SoundCloud";
     public bool Enabled => true;
     public List<TaskCompletionSource<string?>> Pending { get; } = new();
-    public Task<List<Track>> SearchAsync(string query) => Task.FromResult(new List<Track>());
+    public List<Track> Results { get; set; } = new();
+    public Task<List<Track>> SearchAsync(string query) => Task.FromResult(Results);
     public Task<string?> ResolveAsync(Track track)
     {
         var result = new TaskCompletionSource<string?>();

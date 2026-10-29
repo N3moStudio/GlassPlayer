@@ -25,9 +25,12 @@ public partial class MainWindow : Window
     readonly SavedLibrary savedLibrary;
     List<Track>? currentList;
     string currentListTitle = "Imported music";
+    string? currentListCoverArt, currentListSourceUri;
     bool followSpotify;
     bool appearanceReady;
     int playRequest;
+    CancellationTokenSource? playCancellation;
+    readonly PlaybackResolver playbackResolver;
     IReadOnlyList<Track> playbackQueue = Array.Empty<Track>();
     int queueIndex;
     AudioEngine? engine;
@@ -40,6 +43,7 @@ public partial class MainWindow : Window
     IProvider? provider;
     Spotify? spotify;
     readonly SpotifyDesktop desktop = new();
+    readonly SpotifyAdSilencer adSilencer = new();
     System.Windows.Forms.NotifyIcon? tray;
     bool didAutoHide;
     bool updating, playing, advanced, polling, settingsOpen;
@@ -64,6 +68,7 @@ public partial class MainWindow : Window
         if (connectLibrary) _ = Task.Run(Cache.Cleanup);
         foreach (IProvider p in new IProvider[] { new YouTubeMusic(), new SoundCloud(), new Spotify(), new LocalFiles() })
             providers[p.Name] = p;
+        playbackResolver = new PlaybackResolver(providers);
         spotify = (Spotify)providers["Spotify"];
         spotify.Desktop = desktop;
         if (connectLibrary)
@@ -78,6 +83,8 @@ public partial class MainWindow : Window
         VolumeToggle.IsChecked = cfg.RememberVolume;
         GlowToggle.IsChecked = cfg.AmbientGlow;
         HideSpotifyToggle.IsChecked = cfg.HideSpotify;
+        SilenceAdsToggle.IsChecked = cfg.SilenceSpotifyAds;
+        YouTubeMatchesToggle.IsChecked = cfg.AllowYouTubeMatches;
         Ambient.Opacity = cfg.AmbientGlow ? .18 : 0;
         appearanceReady = true;
         cfg.GlassTint = AppSettings.NormalizeTint(cfg.GlassTint);
@@ -86,6 +93,7 @@ public partial class MainWindow : Window
         if (cfg.RememberVolume) Volume.Value = cfg.Volume;
 
         if (cfg.StartProvider == "Spotify") SpotifyBtn.IsChecked = true;
+        else if (cfg.StartProvider == "YouTube Music") YouTubeBtn.IsChecked = true;
         else SoundCloudBtn.IsChecked = true;
 
         // Audio and browser runtimes are initialized only when their feature is used.
@@ -158,10 +166,13 @@ public partial class MainWindow : Window
     {
         timer.Stop(); seekDebounce.Stop(); volDebounce.Stop();
         playRequest++;
+        playCancellation?.Cancel();
+        playCancellation?.Dispose();
         libraryCancellation?.Cancel();
         CompositionTarget.Rendering -= ScrollStep;
         engine?.Dispose();
         desktop.Dispose();
+        adSilencer.Dispose();
         if (tray != null) { tray.Visible = false; tray.Dispose(); }
         spotify?.Web?.Disconnect();
         Web.Dispose();
@@ -181,6 +192,7 @@ public partial class MainWindow : Window
     void DesktopChanged(SpotifyDesktop.State? state)
     {
         if (closing || !followSpotify) return;
+        var adMuted = adSilencer.Apply(cfg.SilenceSpotifyAds && SpotifyAdSilencer.IsAdvertisement(state));
         if (state == null)
         {
             if (activeSp?.Desktop != null)
@@ -196,7 +208,8 @@ public partial class MainWindow : Window
         activeSp = spotify;
         nowPlaying = new Track("desktop", state.Title, state.Artist, null, null, "Spotify", null, state.DurationMs);
         TitleText.Text = string.IsNullOrWhiteSpace(state.Title) ? "Spotify" : state.Title;
-        ArtistText.Text = state.Artist;
+        ArtistText.Text = adMuted ? "Spotify ad silenced · music resumes after the break" : state.Artist;
+        SourceText.Text = "via Spotify desktop";
         if (!ReferenceEquals(desktopArtwork, state.Artwork))
         {
             desktopArtwork = state.Artwork;
@@ -242,6 +255,7 @@ public partial class MainWindow : Window
     async void ShowSpotify_Click(object sender, RoutedEventArgs args)
     {
         playRequest++;
+        playCancellation?.Cancel();
         followSpotify = true;
         didAutoHide = true; // A deliberate Show action stays visible until the user hides or plays from GlassPlayer.
         desktop.RestoreHidden();
@@ -382,7 +396,7 @@ public partial class MainWindow : Window
         SavedBar.Visibility = provider == spotify ? Visibility.Collapsed : Visibility.Visible;
         cfg.StartProvider = provider.Name;
         currentList = null;
-        SaveImportButton.IsEnabled = false;
+        SaveImportButton.IsEnabled = SaveSpotifyListButton.IsEnabled = false;
         List.ItemsSource = null;
         if (provider == spotify) await LoadPlaylistsAsync();
         else if (SearchBox.Text.Length > 0) await SearchAsync();
@@ -397,6 +411,8 @@ public partial class MainWindow : Window
         int request = ++libraryRequest;
         libraryCancellation?.Cancel();
         libraryCancellation = new CancellationTokenSource();
+        currentList = null;
+        SaveImportButton.IsEnabled = SaveSpotifyListButton.IsEnabled = false;
         if (!spotify.SignedIn)
         {
             List.ItemsSource = null;
@@ -425,7 +441,8 @@ public partial class MainWindow : Window
         {
             var tracks = await spotify!.PlaylistAsync(playlist.Id, libraryCancellation.Token);
             if (request != libraryRequest) return;
-            ShowTracks(tracks, $"{playlist.Title} · {tracks.Count} Spotify references", playlist.Title);
+            ShowTracks(tracks, $"{playlist.Title} · {tracks.Count} songs · matching audio plays here", playlist.Title,
+                playlist.Art, playlist.Id == "liked" ? "https://open.spotify.com/collection/tracks" : $"https://open.spotify.com/playlist/{playlist.Id}");
         }
         catch (OperationCanceledException) { }
         catch (Exception ex) { if (request == libraryRequest) Status.Text = ex.Message; }
@@ -452,12 +469,13 @@ public partial class MainWindow : Window
     void List_SelectionChanged(object s, SelectionChangedEventArgs e)
     {
         FindSoundCloudButton.IsEnabled = List.SelectedItem is Track { Source: "Spotify" };
-        if (List.SelectedItem is Track { Source: "Spotify" })
-            Status.Text = "Spotify reference selected. Find it on SoundCloud and choose the version you want. Spotify stays closed.";
+        FindYouTubeButton.IsEnabled = List.SelectedItem is Track;
+        if (List.SelectedItem is Track { Source: "Spotify" } && !cfg.AllowYouTubeMatches)
+            Status.Text = "Enable matching YouTube audio in Settings, or use Find on YouTube. Spotify stays closed.";
         else if (List.SelectedItem is Track t) _ = PlayAsync(t);
         else if (List.SelectedItem is Spotify.Playlist playlist) _ = OpenPlaylistAsync(playlist);
         else if (List.SelectedItem is SavedPlaylist saved)
-            ShowTracks(saved.Tracks, $"{saved.Title} · {saved.Tracks.Count} saved tracks", saved.Title);
+            ShowTracks(saved.Tracks, $"{saved.Title} · {saved.Tracks.Count} saved tracks", saved.Title, saved.CoverArt, saved.SourceUri);
     }
 
     void FindSoundCloud_Click(object sender, RoutedEventArgs e)
@@ -467,21 +485,34 @@ public partial class MainWindow : Window
         SoundCloudBtn.IsChecked = true;
     }
 
+    async void FindYouTube_Click(object sender, RoutedEventArgs e)
+    {
+        if (List.SelectedItem is not Track track) return;
+        SearchBox.Text = $"{track.Artist} {track.Title}";
+        if (YouTubeBtn.IsChecked == true) await SearchAsync();
+        else YouTubeBtn.IsChecked = true;
+    }
+
     // ---- playback ----
     async Task PlayAsync(Track t, bool keepQueue = false)
     {
-        if (t.Source == "Spotify")
+        if (t.Source == "Spotify" && !cfg.AllowYouTubeMatches)
         {
-            Status.Text = "Spotify Free cannot stream inside GlassPlayer. Choose a SoundCloud track or local file.";
+            Status.Text = "Enable matching YouTube audio in Settings, or use Find on YouTube.";
             return;
         }
         int request = ++playRequest;
+        playCancellation?.Cancel();
+        playCancellation?.Dispose();
+        playCancellation = new CancellationTokenSource();
+        var cancellation = playCancellation.Token;
         if (!keepQueue)
         {
-            playbackQueue = currentList?.Where(track => track.Source != "Spotify").ToArray() ?? new[] { t };
+            playbackQueue = currentList?.Where(track => cfg.AllowYouTubeMatches || track.Source != "Spotify").ToArray() ?? new[] { t };
             queueIndex = Math.Max(0, Array.IndexOf(playbackQueue.ToArray(), t));
         }
         followSpotify = false;
+        adSilencer.Apply(false);
         engine?.Stop();
         SetPlaying(false);
         Seek.IsEnabled = false; PrevBtn.IsEnabled = true; NextBtn.IsEnabled = true; PlayBtn.IsEnabled = false;
@@ -490,6 +521,8 @@ public partial class MainWindow : Window
         updating = true; Seek.Maximum = 1; Seek.Value = 0; Cur.Text = "0:00"; Dur.Text = t.DurationMs > 0 ? Fmt(TimeSpan.FromMilliseconds(t.DurationMs)) : "0:00"; updating = false;
         TitleText.Text = t.Title;
         ArtistText.Text = t.Artist;
+        SourceText.Text = "Finding audio…";
+        SourceText.ToolTip = null;
         Fade(TitleText, 0, 1, 450); Fade(ArtistText, 0, 1, 600); Fade(ArtBox, .25, 1, 550);
         if (t.Art != null)
         {
@@ -505,19 +538,21 @@ public partial class MainWindow : Window
             if (activeSp != null) { var old = activeSp; activeSp = null; await Safe(old.PauseAsync); }
             if (request != playRequest || closing) return;
             Status.Text = "Loading…";
-            var url = await providers[t.Source].ResolveAsync(t);
+            var resolved = await playbackResolver.ResolveAsync(t, cfg.AllowYouTubeMatches, cancellation);
             if (request != playRequest || closing) return;
-            if (url == null) { Status.Text = "This track can't be streamed."; return; }
             if (engine == null) StartEngine();
             await engine!.Ready.WaitAsync(TimeSpan.FromSeconds(15));
             if (request != playRequest || closing) return;
-            engine.Open(url);
+            engine.Open(resolved.Location);
+            SourceText.Text = $"via {resolved.Source}";
+            SourceText.ToolTip = resolved.IsMatchFor(t) ? $"Matched audio: {resolved.AudioTrack.Artist} — {resolved.AudioTrack.Title}" : null;
             playStart = DateTime.UtcNow;
             Seek.IsEnabled = true; PlayBtn.IsEnabled = true;
             SetPlaying(true);
             Status.Text = "";
         }
-        catch (Exception ex) { if (request == playRequest && !closing) { Status.Text = ex.Message; SetPlaying(false); } }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { if (request == playRequest && !closing) { Status.Text = ex.Message; SourceText.Text = "Audio unavailable · choose a recording"; SetPlaying(false); } }
     }
 
     void SetPlaying(bool on)
@@ -582,11 +617,13 @@ public partial class MainWindow : Window
     }
 
     // ---- import ----
-    void ShowTracks(List<Track> tracks, string message, string? title = null)
+    void ShowTracks(List<Track> tracks, string message, string? title = null, string? coverArt = null, string? sourceUri = null)
     {
         currentList = tracks;
         currentListTitle = title ?? "Imported music";
-        SaveImportButton.IsEnabled = tracks.Count > 0 && tracks.All(t => t.Source != "Spotify");
+        currentListCoverArt = coverArt;
+        currentListSourceUri = sourceUri;
+        SaveImportButton.IsEnabled = SaveSpotifyListButton.IsEnabled = tracks.Count > 0;
         List.ItemsSource = tracks;
         Status.Text = message;
         listScroll?.ScrollToTop();
@@ -596,7 +633,7 @@ public partial class MainWindow : Window
     void ShowSavedImports()
     {
         currentList = null;
-        SaveImportButton.IsEnabled = false;
+        SaveImportButton.IsEnabled = SaveSpotifyListButton.IsEnabled = false;
         try
         {
             var lists = savedLibrary.Load();
@@ -618,8 +655,8 @@ public partial class MainWindow : Window
         if (currentList is not { Count: > 0 } tracks) return;
         try
         {
-            savedLibrary.Save(currentListTitle, tracks);
-            SaveImportButton.IsEnabled = false;
+            savedLibrary.Save(currentListTitle, tracks, currentListCoverArt, currentListSourceUri);
+            SaveImportButton.IsEnabled = SaveSpotifyListButton.IsEnabled = false;
             Status.Text = "Saved. Open Saved imports to return to this list.";
         }
         catch (Exception ex) { Status.Text = "Couldn't save this list: " + ex.Message; }
@@ -670,6 +707,7 @@ public partial class MainWindow : Window
         try
         {
             List<Track> tracks;
+            ImportedPlaylist? imported = null;
             var source = Importer.SourceFromLink(link);
             var sp = Regex.Match(new Uri(link).AbsolutePath, "^/playlist/([A-Za-z0-9]{22})/?$");
             if (source == "Spotify")
@@ -677,9 +715,15 @@ public partial class MainWindow : Window
                 if (!sp.Success) throw new Exception("For Spotify, paste a playlist link.");
                 if (!spotify!.SignedIn) throw new Exception("Connect your Spotify library in Settings first.");
                 tracks = await spotify.PlaylistAsync(sp.Groups[1].Value);
+                var metadata = (await spotify.PlaylistsAsync()).FirstOrDefault(p => p.Id == sp.Groups[1].Value);
+                imported = new ImportedPlaylist(metadata?.Title ?? Importer.TitleFromLink(link), tracks, metadata?.Art,
+                    $"https://open.spotify.com/playlist/{sp.Groups[1].Value}");
             }
             else if (source is "YouTube Music" or "SoundCloud")
-                tracks = await Importer.FromLinkAsync(link);
+            {
+                imported = await Importer.PlaylistFromLinkAsync(link);
+                tracks = imported.Tracks;
+            }
             else
                 throw new Exception("Paste a link from YouTube, YouTube Music, SoundCloud or Spotify.");
 
@@ -692,7 +736,8 @@ public partial class MainWindow : Window
                 if (isSpotify) SpotifyBtn.IsChecked = true;
                 else SoundCloudBtn.IsChecked = true;
                 libraryRequest++; // Invalidate any tab's pending search/library load.
-                ShowTracks(tracks, isSpotify ? $"{tracks.Count} Spotify references · Select a song to find it on SoundCloud" : $"Imported {tracks.Count} available tracks · Save list to keep them", Importer.TitleFromLink(link));
+                ShowTracks(tracks, isSpotify ? $"{tracks.Count} songs · matching audio plays here" : $"Imported {tracks.Count} tracks · Save list to keep them",
+                    imported?.Title ?? Importer.TitleFromLink(link), imported?.CoverArt, imported?.SourceUri);
                 ImportBox.Text = "";
                 ToggleImport(false);
             }
@@ -741,7 +786,7 @@ public partial class MainWindow : Window
 
     async Task RefreshAccountsAsync()
     {
-        SoundCloudDetail.Text = "Play inside GlassPlayer without Spotify. Public links are supported; availability varies. Some SoundCloud songs require Go+ or are unavailable. This unofficial connection may change.";
+        SoundCloudDetail.Text = "Audio plays inside GlassPlayer. Matching uses title, artist and length; uncertain recordings need your choice. Protected or unavailable tracks may have no playable match. These unofficial connections can change.";
 
         if (spotify == null || !spotify.Enabled)
         {
@@ -755,7 +800,7 @@ public partial class MainWindow : Window
         if (!spotify.SignedIn)
         {
             SpotifyName.Text = "Not connected";
-            SpotifyDetail.Text = "Sign in to show playlists here. Playback uses the Spotify desktop app, including on Free accounts.";
+            SpotifyDetail.Text = "Sign in to browse and save playlists. Matching YouTube audio plays here without the Spotify app.";
             SpotifyAction.Content = "Connect library";
             SetAvatar(null, "S");
             return;
@@ -778,8 +823,8 @@ public partial class MainWindow : Window
             string plan = pr.Plan switch
             {
                 "premium" => "Spotify Premium",
-                null => "Library connected · audio plays in Spotify",
-                _ => "Spotify Free · audio plays in Spotify"
+                null => "Library connected · matching audio available",
+                _ => "Spotify Free · matching audio available"
             };
             SpotifyDetail.Text = pr.Country != null ? $"{plan} ({pr.Country})" : plan;
             SetAvatar(pr.Image, pr.Name.Length > 0 ? pr.Name[..1].ToUpper() : "S");
@@ -816,9 +861,11 @@ public partial class MainWindow : Window
         switch (key)
         {
             case "Autoplay": cfg.Autoplay = on; break;
+            case "YouTubeMatches": cfg.AllowYouTubeMatches = on; break;
             case "Volume": cfg.RememberVolume = on; break;
             case "Glow": cfg.AmbientGlow = on; Anim(Ambient, OpacityProperty, on ? .18 : 0, 600); break;
             case "HideSpotify": cfg.HideSpotify = on; if (on && followSpotify && desktop.Current != null) HideSpotify(); else if (!on) desktop.RestoreHidden(); break;
+            case "SilenceAds": cfg.SilenceSpotifyAds = on; if (followSpotify) DesktopChanged(desktop.Current); else adSilencer.Apply(false); break;
         }
         cfg.Save();
     }

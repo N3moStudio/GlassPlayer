@@ -12,6 +12,8 @@ class AppSettings
     public bool RememberVolume { get; set; } = true;
     public double Volume { get; set; } = 0.8;
     public bool HideSpotify { get; set; } = true;
+    public bool SilenceSpotifyAds { get; set; } = true;
+    public bool AllowYouTubeMatches { get; set; } = true;
     // Tint only the backdrop; artwork and controls always stay fully opaque.
     public double GlassTint { get; set; } = 0.60;
     public string StartProvider { get; set; } = "SoundCloud";

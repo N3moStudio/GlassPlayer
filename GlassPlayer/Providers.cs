@@ -390,6 +390,8 @@ class LocalFiles : IProvider
     }
 }
 
+sealed record ImportedPlaylist(string Title, List<Track> Tracks, string? CoverArt, string SourceUri);
+
 /// <summary>Imports a playlist or song from a YouTube, YouTube Music or SoundCloud link.</summary>
 static class Importer
 {
@@ -410,12 +412,51 @@ static class Importer
         ? Uri.UnescapeDataString(uri.Segments.LastOrDefault()?.Trim('/') ?? "Imported music").Replace('-', ' ')
         : "Imported music";
 
-    public static async Task<List<Track>> FromLinkAsync(string url)
+    public static async Task<List<Track>> FromLinkAsync(string url) => (await PlaylistFromLinkAsync(url)).Tracks;
+
+    public static async Task<ImportedPlaylist> PlaylistFromLinkAsync(string url)
     {
-        bool sc = SourceFromLink(url) == "SoundCloud";
+        var source = SourceFromLink(url);
+        if (source == "Spotify") throw new ArgumentException("Connect your Spotify library to import Spotify references.");
+        bool sc = source == "SoundCloud";
         await Dlp.EnsureAsync();
-        var output = await Dlp.RunAsync($"-j {(sc ? "" : "--flat-playlist ")}--no-warnings --skip-download -- \"{new Uri(url).AbsoluteUri}\"", allowPartial: false);
-        return ParseOutput(output, sc);
+        // Preserve metadata for protected/unavailable recordings so matching can
+        // happen at playback time. This flag is never used for audio downloads.
+        var output = await Dlp.RunAsync($"-J {(sc ? "" : "--flat-playlist ")}--no-warnings --skip-download --ignore-no-formats-error -- \"{new Uri(url).AbsoluteUri}\"", allowPartial: false);
+        return ParsePlaylist(output, sc, url);
+    }
+
+    internal static ImportedPlaylist ParsePlaylist(string output, bool sc, string sourceUri)
+    {
+        using var document = JsonDocument.Parse(output);
+        var root = document.RootElement;
+        var tracks = new List<Track>();
+        if (root.TryGetProperty("entries", out var entries) && entries.ValueKind == JsonValueKind.Array)
+            foreach (var entry in entries.EnumerateArray()) tracks.Add(ParseTrack(entry, sc));
+        else tracks.Add(ParseTrack(root, sc));
+        return new ImportedPlaylist(Text(root, "title") ?? TitleFromLink(sourceUri), tracks, Artwork(root), sourceUri);
+    }
+
+    static string? Text(JsonElement element, string key) => element.TryGetProperty(key, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+
+    static string? Artwork(JsonElement element)
+    {
+        var art = Text(element, "thumbnail");
+        if (!string.IsNullOrWhiteSpace(art)) return art;
+        if (element.TryGetProperty("thumbnails", out var thumbnails) && thumbnails.ValueKind == JsonValueKind.Array)
+            return thumbnails.EnumerateArray().Select(t => Text(t, "url")).LastOrDefault(url => !string.IsNullOrWhiteSpace(url));
+        return null;
+    }
+
+    static Track ParseTrack(JsonElement element, bool sc)
+    {
+        if (element.ValueKind != JsonValueKind.Object || !element.TryGetProperty("id", out var id) || id.ValueKind is not (JsonValueKind.Number or JsonValueKind.String) || string.IsNullOrWhiteSpace(Text(element, "title")))
+            throw new InvalidDataException("A track could not be imported. The incomplete playlist was not saved.");
+        int duration = element.TryGetProperty("duration", out var value) && value.ValueKind == JsonValueKind.Number
+            ? (int)Math.Clamp(value.GetDouble() * 1000, 0, int.MaxValue) : 0;
+        var artist = (Text(element, "artist") ?? Text(element, "uploader") ?? Text(element, "channel") ?? "").Replace(" - Topic", "");
+        return new Track(id.ToString(), Text(element, "title")!, artist, Artwork(element), null,
+            sc ? "SoundCloud" : "YouTube Music", sc ? Text(element, "webpage_url") : null, duration);
     }
 
     internal static List<Track> ParseOutput(string output, bool sc)
@@ -423,20 +464,8 @@ static class Importer
         var list = new List<Track>();
         foreach (var line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
         {
-            try
-            {
-                using var d = JsonDocument.Parse(line);
-                var e = d.RootElement;
-                string? S(string k) => e.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
-                string? art = S("thumbnail");
-                if (art == null && e.TryGetProperty("thumbnails", out var th) && th.ValueKind == JsonValueKind.Array && th.GetArrayLength() > 0)
-                    art = th[th.GetArrayLength() - 1].GetProperty("url").GetString();
-                int ms = e.TryGetProperty("duration", out var du) && du.ValueKind == JsonValueKind.Number ? (int)(du.GetDouble() * 1000) : 0;
-                string artist = (S("artist") ?? S("uploader") ?? S("channel") ?? "").Replace(" - Topic", "");
-                list.Add(new Track(e.GetProperty("id").ToString(), S("title") ?? "", artist, art, sc ? "" : null,
-                    sc ? "SoundCloud" : "YouTube Music", sc ? S("webpage_url") : null, ms));
-            }
-            catch { }
+            using var d = JsonDocument.Parse(line);
+            list.Add(ParseTrack(d.RootElement, sc));
         }
         return list;
     }

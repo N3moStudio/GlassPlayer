@@ -249,18 +249,73 @@ tests.Add(("Spotify desktop selection never launches an app or sends a network c
     Check(fake.Calls == 0 && desktop.Current == null, "A playback connection was started");
 }));
 
+tests.Add(("Ad detection requires explicit ad metadata and disabled song controls", () =>
+{
+    var ad = new SpotifyDesktop.State("Advertisement", "Spotify", null, true, 0, 30000, DateTime.UtcNow, true, true, false, false, false);
+    Check(SpotifyAdSilencer.IsAdvertisement(ad), "Explicit ad missed");
+    Check(!SpotifyAdSilencer.IsAdvertisement(ad with { Artist = "A real artist" }), "A song title was treated as an ad");
+    Check(!SpotifyAdSilencer.IsAdvertisement(ad with { CanSeek = true }), "Seekable music was treated as an ad");
+    Check(!SpotifyAdSilencer.IsAdvertisement(ad with { Title = "Want a break from the ads?" }), "Uncertain metadata treated as an ad");
+    Check(!SpotifyAdSilencer.IsAdvertisement(null), "Missing metadata treated as an ad");
+    return Task.CompletedTask;
+}));
+
+tests.Add(("Ad muting restores only its own sessions and never starts on construction", () =>
+{
+    var audible = new FakeMuteSession("audible");
+    var alreadyMuted = new FakeMuteSession("user-muted") { Muted = true };
+    int queries = 0;
+    using var guard = new SpotifyAdSilencer(() => { queries++; return new[] { audible, alreadyMuted }; });
+    Check(queries == 0, "Construction touched audio sessions");
+    Check(guard.Apply(true) && audible.Muted && alreadyMuted.Muted, "Ad was not silenced");
+    guard.Apply(false);
+    Check(!audible.Muted && alreadyMuted.Muted, "Existing user mute was changed");
+    guard.Apply(true);
+    guard.Dispose();
+    Check(!audible.Muted && alreadyMuted.Muted, "Close did not restore mute state");
+    return Task.CompletedTask;
+}));
+
 tests.Add(("Saved imports retain order, duplicate tracks, artwork and names but no stream tokens", () =>
 {
     var library = new SavedLibrary(Path.Combine(temp, "saved.json"));
     var tracks = Enumerable.Range(0, 150).Select(i => new Track(i.ToString(), "Title " + i, "Artist", "https://example.com/cover.png", "temporary-stream-token", "SoundCloud", "https://soundcloud.com/artist/song")).ToList();
     tracks.Add(tracks[0]);
-    library.Save("My playlist", tracks);
+    const string cover = "https://example.com/playlist-cover.png", source = "https://soundcloud.com/artist/sets/original";
+    library.Save("My playlist", tracks, cover, source);
     var saved = library.Load().Single();
     Check(saved.Title == "My playlist" && saved.Tracks.Count == 151 && saved.Tracks[149].Title == "Title 149", "Metadata or order lost");
     Check(saved.Tracks.All(t => t.Preview == null && t.Art == tracks[0].Art), "Stream token retained or artwork lost");
-    library.Save("Renamed playlist", tracks);
-    Check(library.Load().Count == 1 && library.Load()[0].Title == "Renamed playlist", "Saving twice duplicated the same list");
+    Check(saved.Art == cover && saved.SourceUri == source, "Playlist cover or identity lost");
+    library.Save("Renamed playlist", tracks.Take(2), cover, source);
+    Check(library.Load().Count == 1 && library.Load()[0].Title == "Renamed playlist" && library.Load()[0].Tracks.Count == 2, "Reimport did not update the same source playlist");
+    library.Save("Second playlist", tracks.Take(2), "https://example.com/other-cover.png", "https://soundcloud.com/artist/sets/second");
+    Check(library.Load().Count == 2 && library.Load()[1].Title == "Second playlist" && library.Load()[1].Art != cover, "Identical songs collapsed distinct playlists");
     return Task.CompletedTask;
+}));
+
+tests.Add(("Legacy saved imports remain readable and unnamed sources save idempotently", () =>
+{
+    var path = Path.Combine(temp, "legacy.json");
+    var tracks = new[] { new Track("1", "Song", "Artist", "https://example.com/song.png", null, "SoundCloud", "https://soundcloud.com/artist/song") };
+    File.WriteAllText(path, JsonSerializer.Serialize(new[] { new { Title = "Legacy", Tracks = tracks } }));
+    var library = new SavedLibrary(path);
+    Check(library.Load().Single().Art == tracks[0].Art, "Legacy artwork fallback lost");
+    library.Save("Legacy", tracks);
+    Check(library.Load().Count == 1, "Repeated save duplicated a list");
+    library.Save("Distinct name", tracks);
+    Check(library.Load().Count == 2, "Distinct name lost");
+    return Task.CompletedTask;
+}));
+
+tests.Add(("Playlist import retains exact title and cover independently of song art", async () =>
+{
+    var output = JsonSerializer.Serialize(new { title = "Night Drives ✨", thumbnail = "https://example.com/playlist.jpg", entries = new[] {
+        new { id = "1", title = "Song", artist = "Artist", thumbnail = "https://example.com/song.jpg", webpage_url = "https://soundcloud.com/artist/song", duration = 42.5 }
+    } });
+    var imported = Importer.ParsePlaylist(output, true, "https://soundcloud.com/artist/sets/night-drives-123");
+    Check(imported.Title == "Night Drives ✨" && imported.CoverArt!.EndsWith("playlist.jpg") && imported.Tracks.Single().Art!.EndsWith("song.jpg"), "Playlist and song metadata conflated");
+    await Fails(() => Task.FromResult(Importer.ParsePlaylist("{\"title\":\"Incomplete\",\"entries\":[null]}", true, imported.SourceUri)), "incomplete");
 }));
 
 tests.Add(("Damaged saved library is not silently overwritten", async () =>
@@ -270,7 +325,98 @@ tests.Add(("Damaged saved library is not silently overwritten", async () =>
     try { new SavedLibrary(path).Save("New", new[] { new Track("1", "A", "B", null, null, "Local", "a.wav") }); }
     catch (JsonException) { }
     Check(File.ReadAllText(path) == "{bad json", "Damaged library overwritten");
-    await Fails(() => Task.Run(() => new SavedLibrary(Path.Combine(temp, "references.json")).Save("Spotify", new[] { new Track("1", "A", "B", null, null, "Spotify", "spotify:track:1") })), "references");
+    await Fails(() => Task.Run(() => new SavedLibrary(Path.Combine(temp, "invalid-source.json")).Save("Unknown", new[] { new Track("1", "A", "B", null, null, "Unknown", null) })), "Save tracks");
+}));
+
+tests.Add(("Spotify playlists save original names, covers and references without audio credentials", () =>
+{
+    var library = new SavedLibrary(Path.Combine(temp, "references.json"));
+    var original = new Track("1", "Song", "Artist", "https://example.com/album.png", "secret", "Spotify", "spotify:track:1", 138000);
+    library.Save("Original playlist", new[] { original }, "https://example.com/cover.png", "https://open.spotify.com/playlist/example");
+    var saved = library.Load().Single();
+    Check(saved.Title == "Original playlist" && saved.Art!.EndsWith("cover.png") && saved.Tracks.Single() == original with { Preview = null }, "Original metadata was replaced");
+    return Task.CompletedTask;
+}));
+
+tests.Add(("Matching requires artist, title, version and duration and rejects ambiguity", () =>
+{
+    var original = new Track("sp", "MONTERO (Call Me By Your Name)", "Lil Nas X", null, null, "Spotify", null, 137922);
+    var match = original with { Id = "yt", Source = "YouTube Music", Title = "montero (Call Me By Your Name)", DurationMs = 138000 };
+    Check(PlaybackResolver.FindMatch(original, new[] { match, match }) == match, "Exact match or repeated ID rejected");
+    foreach (var wrong in new[] { match with { Title = match.Title + " (Remix)" }, match with { Title = match.Title + " (Clean)" },
+        match with { Artist = "Someone else" }, match with { DurationMs = 144000 }, match with { DurationMs = 0 }, match with { Source = "SoundCloud" } })
+        Check(PlaybackResolver.FindMatch(original, new[] { wrong }) == null, "Uncertain recording chosen");
+    Check(PlaybackResolver.FindMatch(original, new[] { match, match with { Id = "second" } }) == null, "Ambiguous recording chosen");
+    Check(PlaybackResolver.FindMatch(original with { DurationMs = 0 }, new[] { match }) == null, "Unknown source duration matched");
+    return Task.CompletedTask;
+}));
+
+tests.Add(("Spotify matching never invokes Spotify playback and retains original metadata", async () =>
+{
+    var original = new Track("sp", "Song", "Artist", "https://example.com/original.png", null, "Spotify", "spotify:track:sp", 180000);
+    var candidate = original with { Id = "yt", Source = "YouTube Music", Art = "https://example.com/other.png", DurationMs = 181000 };
+    var youtube = new PlaybackFake { Results = new() { candidate } };
+    // Deliberately no Spotify provider: matching must not require or start it.
+    var resolver = new PlaybackResolver(new Dictionary<string, IProvider> { ["YouTube Music"] = youtube });
+    var result = await resolver.ResolveAsync(original, true);
+    Check(result.Source == "YouTube Music" && result.AudioTrack == candidate && result.IsMatchFor(original), "Source provenance missing");
+    Check(original.Source == "Spotify" && original.Art!.EndsWith("original.png"), "Original metadata changed");
+    await resolver.ResolveAsync(original, true);
+    Check(youtube.Searches == 1 && youtube.Resolves == 2, "Successful match not reused");
+}));
+
+tests.Add(("SoundCloud keeps native playback and falls back only when unavailable", async () =>
+{
+    var original = new Track("sc", "Song", "Artist", null, null, "SoundCloud", null, 180000);
+    var soundcloud = new PlaybackFake { Name = "SoundCloud" };
+    var youtube = new PlaybackFake { Results = new() { original with { Id = "yt", Source = "YouTube Music" } } };
+    var resolver = new PlaybackResolver(new Dictionary<string, IProvider> { ["SoundCloud"] = soundcloud, ["YouTube Music"] = youtube });
+    Check((await resolver.ResolveAsync(original, true)).Source == "SoundCloud" && youtube.Searches == 0, "Native source unnecessarily replaced");
+    soundcloud.Error = new Exception("Protected recording");
+    Check((await resolver.ResolveAsync(original, true)).Source == "YouTube Music", "Unavailable source did not match");
+    await resolver.ResolveAsync(original, true);
+    Check(soundcloud.Resolves == 2 && youtube.Searches == 1, "Replay retried a known unavailable source");
+}));
+
+tests.Add(("Disabled matching and cancelled selections never start fallback searches", async () =>
+{
+    var original = new Track("sc", "Song", "Artist", null, null, "SoundCloud", null, 180000);
+    var soundcloud = new PlaybackFake { Error = new Exception("Protected recording") };
+    var youtube = new PlaybackFake();
+    var resolver = new PlaybackResolver(new Dictionary<string, IProvider> { ["SoundCloud"] = soundcloud, ["YouTube Music"] = youtube });
+    await Fails(() => resolver.ResolveAsync(original, false), "Protected");
+    await Fails(() => resolver.ResolveAsync(original with { Source = "Spotify" }, false), "Enable matching");
+    using var cancellation = new CancellationTokenSource();
+    var pending = new TaskCompletionSource<string?>();
+    soundcloud.Pending = pending.Task;
+    var resolution = resolver.ResolveAsync(original, true, cancellation.Token);
+    cancellation.Cancel();
+    try { await resolution; throw new Exception("Cancellation ignored"); } catch (OperationCanceledException) { }
+    pending.SetResult(null);
+    Check(youtube.Searches == 0, "Disabled/cancelled request started fallback");
+}));
+
+tests.Add(("Failed or ambiguous YouTube matches do not become cached playback", async () =>
+{
+    var original = new Track("sp", "Song", "Artist", null, null, "Spotify", null, 180000);
+    var candidate = original with { Id = "yt", Source = "YouTube Music" };
+    var youtube = new PlaybackFake { Results = new() { candidate, candidate with { Id = "other" } } };
+    var resolver = new PlaybackResolver(new Dictionary<string, IProvider> { ["YouTube Music"] = youtube });
+    await Fails(() => resolver.ResolveAsync(original, true), "No single close");
+    Check(youtube.Resolves == 0, "Ambiguous audio downloaded");
+    youtube.Results = new() { candidate };
+    youtube.Error = new Exception("Download failed");
+    await Fails(() => resolver.ResolveAsync(original, true), "Download failed");
+    youtube.Error = null;
+    await resolver.ResolveAsync(original, true);
+    Check(youtube.Searches == 3, "Failed match was retained");
+}));
+
+tests.Add(("Protected recordings retain metadata for later matching", () =>
+{
+    var imported = Importer.ParsePlaylist("""{"id":101,"title":"Song","artist":"Artist","duration":138,"formats":[],"webpage_url":"https://soundcloud.com/artist/song"}""", true, "https://soundcloud.com/artist/song");
+    Check(imported.Tracks.Single().DurationMs == 138000 && imported.Tracks[0].Preview == null, "Protected metadata lost or treated as audio");
+    return Task.CompletedTask;
 }));
 
 tests.Add(("Playlist import parses more than 100 tracks with original artist and artwork", () =>
@@ -319,4 +465,24 @@ sealed class FakeHandler(Func<HttpRequestMessage, int, Task<HttpResponseMessage>
     int calls;
     public int Calls => calls;
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) => respond(request, Interlocked.Increment(ref calls));
+}
+
+sealed class FakeMuteSession(string id) : IMuteSession
+{
+    public string Id => id;
+    public bool Muted { get; set; }
+    public void Dispose() { }
+}
+
+sealed class PlaybackFake : IProvider
+{
+    public string Name { get; set; } = "YouTube Music";
+    public bool Enabled => true;
+    public List<Track> Results { get; set; } = new();
+    public Exception? Error { get; set; }
+    public Task<string?>? Pending { get; set; }
+    public int Searches { get; private set; }
+    public int Resolves { get; private set; }
+    public Task<List<Track>> SearchAsync(string query) { Searches++; return Task.FromResult(Results); }
+    public Task<string?> ResolveAsync(Track track) { Resolves++; return Pending ?? (Error != null ? Task.FromException<string?>(Error) : Task.FromResult<string?>("fixture.m4a")); }
 }
