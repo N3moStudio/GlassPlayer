@@ -419,6 +419,20 @@ tests.Add(("Protected recordings retain metadata for later matching", () =>
     return Task.CompletedTask;
 }));
 
+tests.Add(("Rapid repeated selections share one download and failures can retry", async () =>
+{
+    int downloads = 0;
+    var pending = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+    Task<string> Download() { downloads++; return pending.Task; }
+    var first = Dlp.ShareDownloadAsync("fixture-shared", Download);
+    var second = Dlp.ShareDownloadAsync("fixture-shared", Download);
+    Check(downloads == 1, "Concurrent downloads wrote the same cache file");
+    pending.SetResult("audio.m4a");
+    Check((await Task.WhenAll(first, second)).All(p => p == "audio.m4a"), "Shared download result lost");
+    await Fails(() => Dlp.ShareDownloadAsync("fixture-retry", () => Task.FromException<string>(new Exception("offline"))), "offline");
+    Check(await Dlp.ShareDownloadAsync("fixture-retry", () => Task.FromResult("recovered.m4a")) == "recovered.m4a", "Failed download prevented retry");
+}));
+
 tests.Add(("Playlist import parses more than 100 tracks with original artist and artwork", () =>
 {
     var output = string.Join('\n', Enumerable.Range(0, 175).Select(i => JsonSerializer.Serialize(new { id = i, title = "Song " + i, artist = "Actual artist", uploader = "Uploader", thumbnail = "https://example.com/art.png", webpage_url = "https://soundcloud.com/artist/song", duration = 123.5 })));

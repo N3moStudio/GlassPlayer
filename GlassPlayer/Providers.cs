@@ -80,6 +80,7 @@ static class Cache
 /// <summary>yt-dlp helper: downloaded once into %LocalAppData%\GlassPlayer\tools and refreshed every few days.</summary>
 static class Dlp
 {
+    static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Lazy<Task<string>>> Downloads = new();
     static readonly HttpClient Http = new();
     static readonly string Dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GlassPlayer", "tools");
     static readonly string Asset = RuntimeInformation.OSArchitecture == Architecture.Arm64 ? "yt-dlp_arm64.exe" : "yt-dlp.exe";
@@ -130,7 +131,18 @@ static class Dlp
     }
 
     /// <summary>Downloads the audio of a page to the cache and returns the local file path.</summary>
-    public static async Task<string> DownloadAsync(string url, string key)
+    public static Task<string> DownloadAsync(string url, string key)
+        => ShareDownloadAsync(key, () => DownloadCoreAsync(url, key));
+
+    internal static async Task<string> ShareDownloadAsync(string key, Func<Task<string>> download)
+    {
+        // Rapid A → B → A selections must not run two writers against A's cache file.
+        var pending = Downloads.GetOrAdd(key, _ => new Lazy<Task<string>>(download));
+        try { return await pending.Value; }
+        finally { Downloads.TryRemove(new KeyValuePair<string, Lazy<Task<string>>>(key, pending)); }
+    }
+
+    static async Task<string> DownloadCoreAsync(string url, string key)
     {
         var hit = Cache.Find(key);
         if (hit != null) return hit;
