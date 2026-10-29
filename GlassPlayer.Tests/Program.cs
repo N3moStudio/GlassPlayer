@@ -338,6 +338,60 @@ tests.Add(("Spotify playlists save original names, covers and references without
     return Task.CompletedTask;
 }));
 
+tests.Add(("Library sync updates own-account metadata atomically and preserves other imports", async () =>
+{
+    const string id = "0123456789ABCDEFGHIJKL";
+    var saved = new SavedLibrary(Path.Combine(temp, "sync.json"));
+    var local = new Track("local", "Local", "Artist", null, null, "Local", "music.wav");
+    saved.Save("Local collection", new[] { local });
+    var playlists = new List<Spotify.Playlist> { new(id, "Night drive", "Me", "https://example.com/list.png"), new("liked", "Liked Songs", "Me", null) };
+    var song = new Track("sp", "Song", "Artist", "https://example.com/song.png", "temporary", "Spotify", "spotify:track:sp", 138000);
+    List<Track> tracks = new() { song, song };
+    var sync = new LibrarySync(saved, _ => Task.FromResult(playlists), (_, _) => Task.FromResult(tracks));
+    var progress = new List<LibrarySyncProgress>();
+    var result = await sync.RunAsync(progress.Add);
+    var imported = saved.Load().Single(p => p.SourceUri == LibrarySync.SourceUri(id));
+    Check(result == new LibrarySyncResult(2, 4) && progress.Count == 2, "Counts or progress lost");
+    Check(imported.Title == "Night drive" && imported.Art == playlists[0].Art && imported.Tracks.Count == 2 && imported.Tracks.All(t => t.Preview == null), "Sync metadata/duplicates or credentials wrong");
+    Check(saved.Load().Single(p => p.Title == "Local collection").Tracks.Single() == local, "Other imports changed");
+    playlists[0] = playlists[0] with { Title = "Renamed", Art = "https://example.com/new.png" };
+    tracks = new();
+    await sync.RunAsync();
+    Check(saved.Load().Count == 3 && saved.Load().Single(p => p.SourceUri == LibrarySync.SourceUri(id)).Tracks.Count == 0, "Empty remote playlist or repeat sync not applied");
+    Check(saved.Load().Single(p => p.SourceUri == LibrarySync.SourceUri(id)).Title == "Renamed", "Renamed playlist duplicated");
+}));
+
+tests.Add(("Failed or cancelled library sync preserves the entire saved file", async () =>
+{
+    var path = Path.Combine(temp, "sync-rollback.json");
+    var saved = new SavedLibrary(path);
+    saved.Save("Keep", new[] { new Track("keep", "Song", "Artist", null, null, "Local", "music.wav") });
+    var before = File.ReadAllText(path);
+    var lists = new List<Spotify.Playlist> { new("0123456789ABCDEFGHIJKL", "First", "Me", null), new("ABCDEFGHIJKL0123456789", "Second", "Me", null) };
+    int calls = 0;
+    var sync = new LibrarySync(saved, _ => Task.FromResult(lists), (_, _) => ++calls == 2
+        ? Task.FromException<List<Track>>(new Exception("offline")) : Task.FromResult(new List<Track>()));
+    await Fails(() => sync.RunAsync(), "offline");
+    Check(File.ReadAllText(path) == before, "Partial sync changed saved playlists");
+    using var cancellation = new CancellationTokenSource();
+    sync = new LibrarySync(saved, _ => Task.FromResult(lists), (_, _) => { cancellation.Cancel(); return Task.FromResult(new List<Track>()); });
+    try { await sync.RunAsync(cancellation: cancellation.Token); throw new Exception("Cancellation ignored"); } catch (OperationCanceledException) { }
+    Check(File.ReadAllText(path) == before, "Cancellation changed saved playlists");
+}));
+
+tests.Add(("Sync rejects repeated playlists and never starts for a pre-cancelled request", async () =>
+{
+    var saved = new SavedLibrary(Path.Combine(temp, "sync-duplicates.json"));
+    var playlist = new Spotify.Playlist("0123456789ABCDEFGHIJKL", "Repeated", "Me", null);
+    int calls = 0;
+    var sync = new LibrarySync(saved, _ => { calls++; return Task.FromResult(new List<Spotify.Playlist> { playlist, playlist }); }, (_, _) => Task.FromResult(new List<Track>()));
+    await Fails(() => sync.RunAsync(), "repeated");
+    Check(saved.Load().Count == 0, "Repeated response was saved");
+    using var cancellation = new CancellationTokenSource(); cancellation.Cancel();
+    try { await sync.RunAsync(cancellation: cancellation.Token); throw new Exception("Cancellation ignored"); } catch (OperationCanceledException) { }
+    Check(calls == 1, "Cancelled sync still contacted the provider");
+}));
+
 tests.Add(("Matching requires artist, title, version and duration and rejects ambiguity", () =>
 {
     var original = new Track("sp", "MONTERO (Call Me By Your Name)", "Lil Nas X", null, null, "Spotify", null, 137922);

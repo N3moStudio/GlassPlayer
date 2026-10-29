@@ -28,17 +28,30 @@ sealed class SavedLibrary(string? path = null)
     public void Save(string title, IEnumerable<Track> tracks, string? coverArt = null, string? sourceUri = null)
     {
         var clean = tracks.Select(t => t with { Preview = null }).ToList();
-        if (clean.Count == 0 || clean.Any(t => t.Source is not ("SoundCloud" or "YouTube Music" or "Local" or "Spotify")))
+        if (clean.Count == 0)
             throw new InvalidDataException("Save tracks from SoundCloud, YouTube, Spotify or local files.");
+        Merge(new[] { new SavedPlaylist(string.IsNullOrWhiteSpace(title) ? "Imported music" : title, clean, coverArt, sourceUri) });
+    }
+
+    // One atomic write after a complete sync. Other imports remain intact, and
+    // empty synced playlists can replace playlists the user emptied in Spotify.
+    internal void Merge(IEnumerable<SavedPlaylist> playlists)
+    {
+        var incoming = playlists.Select(p => p with { Tracks = p.Tracks.Select(t => t with { Preview = null }).ToList() }).ToList();
+        if (incoming.Any(p => string.IsNullOrWhiteSpace(p.Title) || p.Tracks.Any(t => t.Source is not ("SoundCloud" or "YouTube Music" or "Local" or "Spotify"))))
+            throw new InvalidDataException("Save tracks from SoundCloud, YouTube, Spotify or local files.");
+        if (incoming.Count == 0) return;
         var lists = Load(); // Preserve a damaged library instead of silently replacing it.
-        var saved = new SavedPlaylist(string.IsNullOrWhiteSpace(title) ? "Imported music" : title, clean, coverArt, sourceUri);
-        // Separate playlists may contain exactly the same songs. Preserve their names
-        // and covers; a source link identifies a playlist even when its songs change.
-        var existing = lists.FindIndex(p => !string.IsNullOrWhiteSpace(sourceUri)
-            ? p.SourceUri == sourceUri
-            : p.SourceUri == null && p.Title == saved.Title && p.Tracks.Select(t => (t.Source, t.Id)).SequenceEqual(clean.Select(t => (t.Source, t.Id))));
-        if (existing >= 0) lists[existing] = saved;
-        else lists.Add(saved);
+        foreach (var saved in incoming)
+        {
+            // Separate playlists may contain exactly the same songs. Preserve their names
+            // and covers; a source link identifies a playlist even when its songs change.
+            var existing = lists.FindIndex(p => !string.IsNullOrWhiteSpace(saved.SourceUri)
+                ? p.SourceUri == saved.SourceUri
+                : p.SourceUri == null && p.Title == saved.Title && p.Tracks.Select(t => (t.Source, t.Id)).SequenceEqual(saved.Tracks.Select(t => (t.Source, t.Id))));
+            if (existing >= 0) lists[existing] = saved;
+            else lists.Add(saved);
+        }
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(file))!);
         var temporary = file + ".tmp";
         File.WriteAllText(temporary, JsonSerializer.Serialize(lists));

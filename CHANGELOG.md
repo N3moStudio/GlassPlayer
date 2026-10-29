@@ -1,7 +1,9 @@
 # Changelog
 
-## 0.3.0 — Unreleased
+## 0.3.0 — 2026-10-29
 
+- Normal ARM64/x64 installers upgrade the existing application while preserving per-user settings and saved libraries. No personal account data is included in the shared download.
+- Add manual Sync playlists for each user's connected Spotify account, including names, covers, track order, duplicates and Liked Songs. Atomic saves preserve the previous library on failure or cancellation and leave other imports intact.
 - Standalone SoundCloud-first startup. Spotify playlist entries play carefully matched YouTube Music audio without opening Spotify or invoking its controls. Optional desktop controls begin only after an explicit Show Spotify action.
 - Match unavailable SoundCloud audio through YouTube Music using title, artist and bounded duration agreement. Preserve version names, reject ambiguous matches, and show the actual audio source without replacing playlist metadata. Add a matching toggle and manual YouTube search.
 - Save Spotify playlist metadata and preserve protected SoundCloud track metadata for later matching; protected SoundCloud audio is not decrypted.

@@ -20,9 +20,13 @@ Requirements: Windows 11, the appropriate CPU architecture, and Internet access 
 
 The **ARM64 application, .NET runtime and VLC libraries are native ARM64**. Inno Setup's short-lived installer uses Windows x86 compatibility on ARM. The application is not code-signed, so Windows may identify its publisher as unknown. `SHA256SUMS.txt` lists checksums for all downloads. The dependency-source ZIP and GitHub's automatic source-code archives are for developers; you only need the installer for your PC.
 
-## Standalone playback and glass appearance (0.3.0 source)
+## Connect your own library
 
-The current published release is 0.2.0. These changes are in the 0.3.0 development build.
+Every download starts without a bundled account or personal playlists. Open **Settings → Connect library**, sign in to your own Spotify account, then choose **Spotify → Sync playlists**. GlassPlayer saves playlist names, covers, song order and Liked Songs under your Windows account. Select a saved song to play a carefully matched YouTube recording without keeping Spotify open.
+
+Choose **Sync playlists** again to refresh changes from Spotify. This is a manual, one-way refresh on this PC: it does not edit Spotify, transfer playlists to SoundCloud, or sync files between computers. Other saved imports are preserved. A failed or cancelled refresh leaves the previous library intact. Playlists removed from Spotify remain saved locally until managed separately. Your sign-in and library are separate from the application files, so installer upgrades preserve them.
+
+## Standalone playback and glass appearance
 
 GlassPlayer starts on **SoundCloud**. Search SoundCloud or YouTube Music, import playlist links or local audio files, or connect your Spotify library. Audio plays in GlassPlayer's own engine without the Spotify application. Choose **Save list** to keep the metadata, then **Saved imports** to reopen it after browsing or restarting. Track order, duplicate songs, names and artwork links are preserved; stream authorization tokens are not saved. The former 100-track import cap is removed. Import errors are reported instead of silently accepting incomplete output.
 

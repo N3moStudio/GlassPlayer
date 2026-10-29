@@ -101,6 +101,13 @@ static class UiPreview
                 Render("player-clear", 1020, 660);
                 Element<Slider>("GlassTintSlider").Value = 95;
                 Render("player-readable", 1020, 660);
+                Element<RadioButton>("SpotifyBtn").IsChecked = true;
+                Drain();
+                Render("spotify-sync-860", 860, 580);
+                var syncButton = Element<Button>("SyncPlaylistsButton");
+                if (Element<StackPanel>("LibraryBar").Visibility != Visibility.Visible || syncButton.RenderSize.Height < 1
+                    || syncButton.TransformToAncestor(surface).TransformBounds(new Rect(syncButton.RenderSize)).Bottom > 564)
+                    throw new Exception("Library sync action is not available at minimum size");
                 Element<Grid>("Overlay").Visibility = Visibility.Visible;
                 Element<Border>("Sheet").Opacity = 1;
                 Element<Border>("Sheet").RenderTransform = Transform.Identity;

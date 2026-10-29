@@ -56,6 +56,7 @@ public partial class MainWindow : Window
     bool rPlaying;
     int libraryRequest;
     CancellationTokenSource? libraryCancellation;
+    CancellationTokenSource? syncCancellation;
 
     public MainWindow() : this(AppSettings.Load(), new SavedLibrary()) { }
 
@@ -170,6 +171,7 @@ public partial class MainWindow : Window
         playCancellation?.Dispose();
         libraryCancellation?.Cancel();
         CompositionTarget.Rendering -= ScrollStep;
+        syncCancellation?.Cancel();
         engine?.Dispose();
         desktop.Dispose();
         adSilencer.Dispose();
@@ -405,6 +407,48 @@ public partial class MainWindow : Window
 
     async void Library_Click(object s, RoutedEventArgs e) => await LoadPlaylistsAsync();
 
+    async void SyncPlaylists_Click(object sender, RoutedEventArgs e)
+    {
+        if (syncCancellation != null) return;
+        if (spotify?.SignedIn != true)
+        {
+            Status.Text = "Connect your own Spotify account in Settings, then choose Sync playlists.";
+            ToggleSettings(true);
+            return;
+        }
+        var cancellation = new CancellationTokenSource();
+        syncCancellation = cancellation;
+        SyncPlaylistsButton.IsEnabled = false;
+        CancelSyncButton.Visibility = Visibility.Visible;
+        int request = ++libraryRequest;
+        libraryCancellation?.Cancel();
+        try
+        {
+            var sync = new LibrarySync(savedLibrary, spotify.PlaylistsAsync, spotify.PlaylistAsync);
+            var result = await sync.RunAsync(p =>
+            {
+                if (!closing && request == libraryRequest)
+                    Status.Text = $"Syncing {p.Completed + 1}/{p.Total}: {p.Title}…";
+            }, cancellation.Token);
+            if (!closing && request == libraryRequest)
+            {
+                ShowSavedImports();
+                Status.Text = $"Synced {result.Playlists} playlists · {result.Tracks} songs. Sync again to refresh changes from Spotify.";
+            }
+        }
+        catch (OperationCanceledException) { if (!closing && request == libraryRequest) Status.Text = "Sync cancelled. Saved playlists were not changed."; }
+        catch (Exception ex) { if (!closing && request == libraryRequest) Status.Text = "Sync stopped. Saved playlists were not changed. " + ex.Message; }
+        finally
+        {
+            syncCancellation = null;
+            cancellation.Dispose();
+            SyncPlaylistsButton.IsEnabled = true;
+            CancelSyncButton.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    void CancelSync_Click(object sender, RoutedEventArgs e) => syncCancellation?.Cancel();
+
     async Task LoadPlaylistsAsync()
     {
         if (spotify == null) return;
@@ -442,7 +486,7 @@ public partial class MainWindow : Window
             var tracks = await spotify!.PlaylistAsync(playlist.Id, libraryCancellation.Token);
             if (request != libraryRequest) return;
             ShowTracks(tracks, $"{playlist.Title} · {tracks.Count} songs · matching audio plays here", playlist.Title,
-                playlist.Art, playlist.Id == "liked" ? "https://open.spotify.com/collection/tracks" : $"https://open.spotify.com/playlist/{playlist.Id}");
+                playlist.Art, LibrarySync.SourceUri(playlist.Id));
         }
         catch (OperationCanceledException) { }
         catch (Exception ex) { if (request == libraryRequest) Status.Text = ex.Message; }
@@ -638,7 +682,7 @@ public partial class MainWindow : Window
         {
             var lists = savedLibrary.Load();
             List.ItemsSource = lists;
-            Status.Text = lists.Count == 0 ? "Search SoundCloud, or import a playlist or local files. Save a list to keep it here." : "Choose a saved import. Spotify is not needed.";
+            Status.Text = lists.Count == 0 ? "Connect your Spotify library in Settings, then Sync playlists. You can also search or import music." : "Choose a saved playlist. The Spotify app is not needed.";
         }
         catch (Exception ex) { Status.Text = "Couldn't read saved imports: " + ex.Message; }
     }
@@ -837,6 +881,7 @@ public partial class MainWindow : Window
         if (spotify == null) return;
         if (spotify.SignedIn)
         {
+            syncCancellation?.Cancel();
             if (activeSp != null) { await Safe(spotify.PauseAsync); activeSp = null; SetPlaying(false); }
             spotify.SignOut();
             libraryRequest++;
@@ -852,6 +897,7 @@ public partial class MainWindow : Window
         SpotifyAction.IsEnabled = true;
         await RefreshAccountsAsync();
         if (provider == spotify) await LoadPlaylistsAsync();
+        else SpotifyBtn.IsChecked = true;
     }
 
     void Setting_Click(object s, RoutedEventArgs e)
