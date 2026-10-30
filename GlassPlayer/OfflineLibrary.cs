@@ -62,7 +62,7 @@ sealed class OfflineLibrary(string? directory = null)
             finally { if (File.Exists(temporary)) File.Delete(temporary); }
         }
         string? artwork = null;
-        if (Uri.TryCreate(original.Art, UriKind.Absolute, out var uri) && uri.Scheme == "https")
+        if (Uri.TryCreate(ArtworkConverter.SizedAddress(original.Art, 512), UriKind.Absolute, out var uri) && uri.Scheme == "https")
         {
             try
             {

@@ -461,6 +461,16 @@ tests.Add(("Recent caches stay bounded, expire, and can be cleared on sign-out",
     return Task.CompletedTask;
 }));
 
+tests.Add(("SoundCloud artwork requests a small variant without changing unrelated addresses", () =>
+{
+    var original = "https://i1.sndcdn.com/artworks-example-original.jpg";
+    Check(ArtworkConverter.SizedAddress(original, 96) == "https://i1.sndcdn.com/artworks-example-large.jpg", "Thumbnail fetched original art");
+    Check(ArtworkConverter.SizedAddress(original, 512) == "https://i1.sndcdn.com/artworks-example-t500x500.jpg", "Offline cover fetched oversized art");
+    const string unrelated = "https://example.com/cover-original.jpg";
+    Check(ArtworkConverter.SizedAddress(unrelated, 96) == unrelated, "Unrelated address modified");
+    return Task.CompletedTask;
+}));
+
 tests.Add(("Downloaded songs persist locally and resolve without a network provider", async () =>
 {
     var folder = Path.Combine(temp, "offline");

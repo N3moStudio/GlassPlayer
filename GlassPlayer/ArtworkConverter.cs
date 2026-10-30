@@ -18,7 +18,7 @@ public sealed class ArtworkConverter : IValueConverter
     public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture) => throw new NotSupportedException();
     internal static BitmapImage? Create(string? address, int pixels)
     {
-        if (!Uri.TryCreate(address, UriKind.Absolute, out var uri)) return null;
+        if (!Uri.TryCreate(SizedAddress(address, pixels), UriKind.Absolute, out var uri)) return null;
         try
         {
             var image = new BitmapImage();
@@ -32,5 +32,15 @@ public sealed class ArtworkConverter : IValueConverter
             return image;
         }
         catch { return null; }
+    }
+    internal static string? SizedAddress(string? address, int pixels)
+    {
+        if (!Uri.TryCreate(address, UriKind.Absolute, out var uri) || uri.Scheme != "https") return address;
+        if (uri.Host == "sndcdn.com" || uri.Host.EndsWith(".sndcdn.com", StringComparison.OrdinalIgnoreCase))
+        {
+            var size = pixels <= 100 ? "large" : "t500x500";
+            return System.Text.RegularExpressions.Regex.Replace(address!, @"-(original|large|t\d+x\d+)\.(jpg|png)(?=\?|$)", "-" + size + ".$2");
+        }
+        return address;
     }
 }

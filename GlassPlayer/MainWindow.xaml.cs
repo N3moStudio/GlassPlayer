@@ -38,6 +38,7 @@ public partial class MainWindow : Window
     CancellationTokenSource? playCancellation;
     readonly PlaybackResolver playbackResolver;
     IReadOnlyList<Track> playbackQueue = Array.Empty<Track>();
+    string? playbackQueueSource;
     int queueIndex;
     AudioEngine? engine;
     long fallbackMs;
@@ -417,7 +418,7 @@ public partial class MainWindow : Window
     }
 
     async void Library_Click(object s, RoutedEventArgs e) { SearchBox.Clear(); viewingDownloads = false; await LoadPlaylistsAsync(); }
-    async void RefreshLibrary_Click(object s, RoutedEventArgs e) { cachedPlaylists = null; playlistCache.Clear(); await LoadPlaylistsAsync(); }
+    async void RefreshLibrary_Click(object s, RoutedEventArgs e) { SearchBox.Clear(); viewingDownloads = false; cachedPlaylists = null; playlistCache.Clear(); await LoadPlaylistsAsync(); }
 
     async void SyncPlaylists_Click(object sender, RoutedEventArgs e)
     {
@@ -548,6 +549,8 @@ public partial class MainWindow : Window
                 if (request == libraryRequest && tracks.Count <= 500) playlistCache.Set(playlist.Id, tracks);
             }
             if (request != libraryRequest) return;
+            if (playbackQueueSource == LibrarySync.SourceUri(playlist.Id) && queueIndex < tracks.Count && tracks[queueIndex] == nowPlaying)
+                playbackQueue = tracks.ToArray();
             ShowTracks(tracks, $"{playlist.Title} · {tracks.Count} songs · matching audio plays here", playlist.Title,
                 playlist.Art, LibrarySync.SourceUri(playlist.Id));
         }
@@ -630,6 +633,7 @@ public partial class MainWindow : Window
         var cancellation = playCancellation.Token;
         if (!keepQueue)
         {
+            playbackQueueSource = currentListSourceUri;
             playbackQueue = currentList?.Where(track => cfg.AllowYouTubeMatches || track.Source != "Spotify").ToArray() ?? new[] { t };
             queueIndex = Math.Max(0, Array.IndexOf(playbackQueue.ToArray(), t));
         }
