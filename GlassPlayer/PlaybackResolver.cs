@@ -18,6 +18,12 @@ sealed class PlaybackResolver(IReadOnlyDictionary<string, IProvider> providers, 
     public async Task<PlaybackResolution> ResolveAsync(Track original, bool allowMatches, CancellationToken cancellation = default)
     {
         cancellation.ThrowIfCancellationRequested();
+        if (original.Source == "Local")
+        {
+            var location = await providers["Local"].ResolveAsync(original, cancellation);
+            if (string.IsNullOrWhiteSpace(location)) throw new InvalidOperationException("This local audio file is unavailable.");
+            return new(location, original.DownloadedFrom is { } source ? "Downloaded · " + source : "Local", original);
+        }
         if (offline?.Find(original) is { } downloaded) return downloaded;
         // Older imports stored the 30-second excerpt length. Recover the full
         // recording's metadata before matching; never promote a preview to audio.

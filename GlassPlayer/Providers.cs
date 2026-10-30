@@ -18,7 +18,7 @@ using System.Text.Json;
 
 namespace GlassPlayer;
 
-public record Track(string Id, string Title, string Artist, string? Art, string? Preview, string Source, string? OpenUri, int DurationMs = 0, bool IsPreview = false, bool CatalogRecording = false)
+public record Track(string Id, string Title, string Artist, string? Art, string? Preview, string Source, string? OpenUri, int DurationMs = 0, bool IsPreview = false, bool CatalogRecording = false, string? DownloadedFrom = null)
 {
     public string DurationText => IsPreview ? "Preview" : DurationMs > 0 ? $"{DurationMs / 60000}:{DurationMs / 1000 % 60:00}" : "";
 }
@@ -486,7 +486,7 @@ class LocalFiles : IProvider
     }
 }
 
-sealed record ImportedPlaylist(string Title, List<Track> Tracks, string? CoverArt, string SourceUri);
+sealed record ImportedPlaylist(string Title, List<Track> Tracks, string? CoverArt, string SourceUri, List<PlaylistFolder>? Folders = null);
 
 /// <summary>Imports a playlist or song from a YouTube, YouTube Music or SoundCloud link.</summary>
 static class Importer
@@ -510,15 +510,15 @@ static class Importer
 
     public static async Task<List<Track>> FromLinkAsync(string url) => (await PlaylistFromLinkAsync(url)).Tracks;
 
-    public static async Task<ImportedPlaylist> PlaylistFromLinkAsync(string url)
+    public static async Task<ImportedPlaylist> PlaylistFromLinkAsync(string url, CancellationToken cancellation = default)
     {
         var source = SourceFromLink(url);
         if (source == "Spotify") throw new ArgumentException("Connect your Spotify library to import Spotify references.");
         bool sc = source == "SoundCloud";
-        await Dlp.EnsureAsync();
+        await Dlp.EnsureAsync(cancellation);
         // Preserve metadata for protected/unavailable recordings so matching can
         // happen at playback time. This flag is never used for audio downloads.
-        var output = await Dlp.RunAsync($"-J {(sc ? "" : "--flat-playlist ")}--no-warnings --skip-download --ignore-no-formats-error -- \"{new Uri(url).AbsoluteUri}\"", allowPartial: false);
+        var output = await Dlp.RunAsync($"-J {(sc ? "" : "--flat-playlist ")}--no-warnings --skip-download --ignore-no-formats-error -- \"{new Uri(url).AbsoluteUri}\"", allowPartial: false, cancellation: cancellation, timeout: TimeSpan.FromMinutes(3));
         return ParsePlaylist(output, sc, url);
     }
 

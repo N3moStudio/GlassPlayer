@@ -23,7 +23,7 @@ sealed class LibrarySync(SavedLibrary saved,
             progress?.Invoke(new(staged.Count, playlists.Count, playlist.Title));
             var tracks = await readTracks(playlist.Id, cancellation);
             cancellation.ThrowIfCancellationRequested();
-            staged.Add(new(playlist.Title, tracks, playlist.Art, source));
+            staged.Add(new(playlist.Title, tracks, playlist.Art, source, playlist.Folders));
         }
         cancellation.ThrowIfCancellationRequested();
         saved.Merge(staged);

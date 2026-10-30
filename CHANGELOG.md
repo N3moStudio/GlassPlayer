@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.2 — 2026-10-29
+
+- Add Settings actions to download all saved songs and resync linked playlists before downloading missing audio, with progress, cancellation and retry that skips completed files.
+- Filter Downloads by All, SoundCloud or YouTube Music using actual audio provenance, including YouTube matches of Spotify/SoundCloud references.
+- Link original Spotify/SoundCloud songs to explicitly chosen downloads; remember choices across restarts and sync without duplicating audio files.
+- Add folder-aware Spotify browsing, playlist cover rows, breadcrumbs and Back navigation. Mirror folder placement locally onto uniquely matching transferred playlists.
+- Show saved Spotify playlists immediately during refresh, restrict each service's saved view to its source by default, cache offline metadata and shorten list animations.
+- Verify 59 account-free checks covering persistence, source filters, manual links, bulk cancellation/resume, folder traversal, resync failures and offscreen layout. Actual account folder synchronization remains unverified in this environment.
+
 ## 0.3.1 — 2026-10-29
 
 - Stream audio instead of downloading the full song before playback; cancel abandoned helper processes and bound network waits.
