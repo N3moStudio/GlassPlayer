@@ -30,6 +30,7 @@ public partial class MainWindow : Window
     bool viewingDownloads;
     string? downloadSource;
     Track? pendingLink;
+    Track? linkingDownload;
     List<LibraryPlaylistItem> browsePlaylists = new();
     readonly List<PlaylistFolder> browsePath = new();
     bool browsingPlaylist;
@@ -515,7 +516,8 @@ public partial class MainWindow : Window
         SyncPlaylistsButton.IsEnabled = !busy && syncCancellation == null;
         CancelDownloadsButton.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
         LinkDownloadButton.IsEnabled = !busy && List.SelectedItem is Track { Source: "Spotify" or "SoundCloud" };
-        LinkSelectedButton.IsEnabled = !busy && pendingLink != null && List.SelectedItem is Track { Source: "Local" or "YouTube Music" or "SoundCloud" };
+        LinkSelectedButton.IsEnabled = !busy && pendingLink != null && List.SelectedItem is Track { Source: "Local" or "YouTube Music" or "SoundCloud" }
+            && (syncCancellation == null || List.SelectedItem is Track { Source: "Local" });
         LinkSelectedButton.Content = List.SelectedItem is Track { Source: "Local" } ? "Link this download" : "Download and link";
         try { UnlinkDownloadButton.IsEnabled = !busy && List.SelectedItem is Track track && offline.HasLink(track); }
         catch { UnlinkDownloadButton.IsEnabled = false; }
@@ -531,7 +533,11 @@ public partial class MainWindow : Window
         UpdateDownloadButtons();
     }
     void ClearLink() { pendingLink = null; LinkBanner.Visibility = Visibility.Collapsed; UpdateDownloadButtons(); }
-    void CancelLink_Click(object sender, RoutedEventArgs e) => ClearLink();
+    void CancelLink_Click(object sender, RoutedEventArgs e)
+    {
+        if (linkingDownload != null && linkingDownload == pendingLink) downloadCancellation?.Cancel();
+        ClearLink();
+    }
     void LinkDownload_Click(object sender, RoutedEventArgs e)
     {
         if (List.SelectedItem is not Track { Source: "Spotify" or "SoundCloud" } original) return;
@@ -627,12 +633,14 @@ public partial class MainWindow : Window
         if (downloadCancellation != null || syncCancellation != null) return;
         using var cancellation = new CancellationTokenSource();
         downloadCancellation = cancellation;
+        linkingDownload = linkOriginal;
         UpdateDownloadButtons();
         try
         {
             Status.Text = "Saving " + track.Title + " for offline playback…";
             DownloadsStatus.Text = Status.Text;
             await SaveAudioAsync(track, cancellation.Token);
+            cancellation.Token.ThrowIfCancellationRequested();
             if (linkOriginal != null)
             {
                 offline.Link(linkOriginal, track);
@@ -647,6 +655,7 @@ public partial class MainWindow : Window
         finally
         {
             downloadCancellation = null;
+            linkingDownload = null;
             UpdateDownloadButtons();
         }
     }

@@ -149,6 +149,17 @@ static class UiPreview
                 Drain();
                 if (Field(window, "pendingLink") is not Track { Source: "Spotify" } || Element<Border>("LinkBanner").Visibility != Visibility.Visible)
                     throw new Exception("Find on YouTube forgot the original song for linking");
+                using (var cancelLink = new CancellationTokenSource())
+                {
+                    typeof(MainWindow).GetField("downloadCancellation", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, cancelLink);
+                    typeof(MainWindow).GetField("linkingDownload", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, Field(window, "pendingLink"));
+                    Click("CancelLink_Click");
+                    if (!cancelLink.IsCancellationRequested || Field(window, "pendingLink") != null)
+                        throw new Exception("Cancel link left its download/link operation running");
+                    typeof(MainWindow).GetField("downloadCancellation", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, null);
+                    typeof(MainWindow).GetField("linkingDownload", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, null);
+                }
+                typeof(MainWindow).GetMethod("BeginLink", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, new object[] { tracks[0] });
                 Click("Downloads_Click");
                 Element<RadioButton>("YouTubeDownloadsFilter").IsChecked = true;
                 if (((IEnumerable<Track>)list.ItemsSource).Count() != 1 || ((IEnumerable<Track>)list.ItemsSource).Single().DownloadedFrom != "YouTube Music")
