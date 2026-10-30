@@ -607,6 +607,154 @@ tests.Add(("Import links reject lookalike domains and non-HTTPS schemes", async 
         await Fails(() => Task.FromResult(Importer.SourceFromLink(link)), "Paste");
 }));
 
+tests.Add(("Downloads filter by audio provenance and combine source with search", async () =>
+{
+    var library = new OfflineLibrary(Path.Combine(temp, "source-filters"));
+    var file = Path.Combine(temp, "filter.m4a"); await File.WriteAllBytesAsync(file, new byte[] { 1, 2, 3 });
+    var reference = new Track("sp", "Night drive", "Singer", null, null, "Spotify", null, 200000);
+    await library.StoreAsync(reference, "Downloaded · YouTube Music", file, default);
+    await library.StoreAsync(reference with { Id = "sc", Source = "SoundCloud", Title = "Daylight" }, "SoundCloud", file, default);
+    Check(library.Tracks().Count == 2 && library.Tracks("YouTube Music", "night").Single().DownloadedFrom == "YouTube Music", "Original provider replaced audio provenance");
+    Check(library.Tracks("SoundCloud", "night").Count == 0 && library.Tracks("SoundCloud", "SINGER").Count == 1, "Combined filtering failed");
+    var local = library.Tracks("YouTube Music").Single();
+    var result = await new PlaybackResolver(new Dictionary<string, IProvider> { ["Local"] = new LocalFiles() }, library).ResolveAsync(local, false);
+    Check(result.Location == local.OpenUri && result.Source == "Downloaded · YouTube Music", "Local playback lost provenance");
+}));
+
+tests.Add(("Manual links survive restart, override matching and share one downloaded file", async () =>
+{
+    string folder = Path.Combine(temp, "manual-links"), file = Path.Combine(temp, "chosen.m4a");
+    await File.WriteAllBytesAsync(file, new byte[] { 1, 2, 3 });
+    var downloaded = new Track("yt-choice", "Chosen recording", "Artist", null, null, "YouTube Music", null, 210000);
+    var spotifyTrack = downloaded with { Source = "Spotify", Id = "sp-ref", Title = "Different catalog spelling", Preview = "do-not-store" };
+    var soundcloudTrack = spotifyTrack with { Source = "SoundCloud", Id = "sc-ref" };
+    var library = new OfflineLibrary(folder);
+    await library.StoreAsync(downloaded, "YouTube Music", file, default);
+    library.Link(spotifyTrack, library.Tracks().Single());
+    library.Link(soundcloudTrack, downloaded);
+    library = new OfflineLibrary(folder);
+    var resolver = new PlaybackResolver(new Dictionary<string, IProvider>(), library);
+    var first = await resolver.ResolveAsync(spotifyTrack, false);
+    Check(first.Location == (await resolver.ResolveAsync(soundcloudTrack, false)).Location && first.AudioTrack.Title == downloaded.Title, "Manual choice was not preferred");
+    Check(library.Tracks().Count == 1 && !File.ReadAllText(Path.Combine(folder, "links.json")).Contains("do-not-store"), "Link copied audio or stored stream credentials");
+    library.Unlink(spotifyTrack);
+    Check(!library.HasLink(spotifyTrack) && library.Find(spotifyTrack) == null && library.HasLink(soundcloudTrack) && File.Exists(first.Location), "Unlink removed audio or another song link");
+    File.Delete(first.Location);
+    await Fails(() => resolver.ResolveAsync(soundcloudTrack, true), "linked download is missing");
+}));
+
+tests.Add(("Bulk download deduplicates files, skips completed songs and continues after failure", async () =>
+{
+    var track = new Track("one", "First", "Artist", null, null, "SoundCloud", null);
+    var lists = new[] { new SavedPlaylist("A", new() { track, track, track with { Id = "two" } }),
+        new SavedPlaylist("B", new() { track, track with { Id = "bad" }, track with { Id = "local", Source = "Local" } }) };
+    var saved = new HashSet<string> { "one" };
+    int active = 0, peak = 0;
+    var batch = new DownloadBatch(t => saved.Contains(t.Id), async (t, ct) =>
+    {
+        peak = Math.Max(peak, ++active);
+        try { await Task.Delay(1, ct); if (t.Id == "bad") throw new Exception("unavailable"); saved.Add(t.Id); }
+        finally { active--; }
+    });
+    var progress = new List<DownloadProgress>();
+    var result = await batch.RunAsync(lists, progress.Add);
+    Check(result.Saved == 1 && result.Existing == 1 && result.Failures.Count == 1 && peak == 1, "Wrong batch counts or concurrent resource use");
+    Check(progress[^1].Completed == 3 && progress[^1].Total == 3 && lists[0].Tracks.Count == 3, "Progress or duplicate playlist entries changed");
+    result = await batch.RunAsync(lists);
+    Check(result.Saved == 0 && result.Existing == 2 && result.Failures.Count == 1, "Retry redownloaded completed songs");
+}));
+
+tests.Add(("Cancelling bulk download retains completed files and resumes remaining songs", async () =>
+{
+    var track = new Track("one", "First", "Artist", null, null, "YouTube Music", null);
+    var lists = new[] { new SavedPlaylist("List", new() { track, track with { Id = "two" } }) };
+    var completed = new HashSet<string>();
+    using var cancellation = new CancellationTokenSource();
+    var batch = new DownloadBatch(t => completed.Contains(t.Id), (t, ct) => { completed.Add(t.Id); cancellation.Cancel(); return Task.CompletedTask; });
+    try { await batch.RunAsync(lists, cancellation: cancellation.Token); throw new Exception("Cancellation ignored"); } catch (OperationCanceledException) { }
+    Check(completed.SetEquals(new[] { "one" }), "Cancellation removed completed work or continued queue");
+    batch = new DownloadBatch(t => completed.Contains(t.Id), (t, ct) => { completed.Add(t.Id); return Task.CompletedTask; });
+    var result = await batch.RunAsync(lists);
+    Check(result.Existing == 1 && result.Saved == 1, "Resume failed");
+}));
+
+tests.Add(("Resync refreshes links, preserves custom covers and keeps failed playlists", async () =>
+{
+    var saved = new SavedLibrary(Path.Combine(temp, "resync.json"));
+    var track = new Track("old", "Original", "Artist", null, null, "SoundCloud", null);
+    saved.Merge(new[] { new SavedPlaylist("Good", new() { track }, "custom-cover", "https://soundcloud.com/a/sets/good"),
+        new SavedPlaylist("Failed", new() { track }, "cover", "https://music.youtube.com/playlist?list=bad"),
+        new SavedPlaylist("Local copy", new() { track }) });
+    int calls = 0;
+    var sync = new PlaylistResync(saved, null, (url, ct) =>
+    {
+        calls++;
+        return url.Contains("bad") ? Task.FromException<ImportedPlaylist>(new Exception("unavailable"))
+            : Task.FromResult(new ImportedPlaylist("Renamed", new() { track with { Id = "new" } }, "provider-cover", url));
+    });
+    var result = await sync.RunAsync();
+    var lists = saved.Load();
+    Check(result.Updated == 1 && result.Failures.Count == 1 && calls == 2 && lists.Count == 3, "Resync changed unlinked lists or hid failure");
+    Check(lists[0].Title == "Renamed" && lists[0].CoverArt == "custom-cover" && lists[0].Tracks[0].Id == "new", "Refresh lost playlist identity/cover");
+    Check(lists[1].Title == "Failed" && lists[1].Tracks[0].Id == "old", "Failed refresh replaced saved songs");
+    using var cancelled = new CancellationTokenSource();
+    var before = File.ReadAllText(Path.Combine(temp, "resync.json"));
+    sync = new PlaylistResync(saved, null, (url, ct) => { cancelled.Cancel(); return Task.FromResult(new ImportedPlaylist("No", new(), null, url)); });
+    try { await sync.RunAsync(cancellation: cancelled.Token); throw new Exception("Cancellation ignored"); } catch (OperationCanceledException) { }
+    Check(File.ReadAllText(Path.Combine(temp, "resync.json")) == before, "Cancelled import changed saved library");
+}));
+
+tests.Add(("Spotify folder traversal preserves nested paths and rejects cycles", async () =>
+{
+    var fake = new FakeHandler(async (req, _) =>
+    {
+        using var body = JsonDocument.Parse(await req.Content!.ReadAsStringAsync());
+        var vars = body.RootElement.GetProperty("variables");
+        Check(!vars.GetProperty("flatten").GetBoolean(), "Folder structure was flattened");
+        var folder = vars.GetProperty("folderUri").GetString();
+        var item = folder switch
+        {
+            null => """{"item":{"__typename":"FolderResponseWrapper","_uri":"spotify:user:fixture:folder:parent","data":{"name":"Favorites"}}}""",
+            "spotify:user:fixture:folder:parent" => """{"item":{"__typename":"FolderResponseWrapper","_uri":"spotify:folder:child","name":"Evenings"}}""",
+            _ => """{"item":{"_uri":"spotify:playlist:0123456789ABCDEFGHIJKL","data":{"name":"Night drive"}}}"""
+        };
+        return Json("{\"data\":{\"me\":{\"libraryV3\":{\"totalCount\":1,\"items\":[" + item + "]}}}}");
+    });
+    var playlists = await WebLibrary(fake).PlaylistsAsync();
+    Check(fake.Calls == 3 && playlists.Count == 2 && playlists[1].Folders!.Select(f => f.Title).SequenceEqual(new[] { "Favorites", "Evenings" }), "Nested path was lost");
+    var loop = new FakeHandler((req, _) => Task.FromResult(Json("""{"data":{"me":{"libraryV3":{"items":[{"item":{"__typename":"FolderResponseWrapper","_uri":"spotify:folder:loop","name":"Loop"}}],"totalCount":1}}}}""")));
+    await Fails(() => WebLibrary(loop).PlaylistsAsync(), "repeated folder");
+    Check(loop.Calls == 2, "Folder cycle kept making requests");
+}));
+
+tests.Add(("Synced folder organization mirrors unique transferred playlists and follows moves", () =>
+{
+    var saved = new SavedLibrary(Path.Combine(temp, "folder-copy.json"));
+    var song = new Track("song", "Song", "Artist", null, null, "SoundCloud", null);
+    saved.Merge(new[] { new SavedPlaylist("Night drive", new() { song }, SourceUri: "https://soundcloud.com/a/sets/night") });
+    var spotifyPlaylist = new SavedPlaylist("Night drive", new() { song with { Source = "Spotify" } }, SourceUri: LibrarySync.SourceUri("0123456789ABCDEFGHIJKL"),
+        Folders: new() { new("folder-1", "Moods") });
+    saved.Merge(new[] { spotifyPlaylist });
+    var copy = saved.Load().First();
+    Check(copy.Folders?.Single().Title == "Moods" && copy.FolderSourceUri == spotifyPlaylist.SourceUri, "Transfer copy not organized");
+    saved.Merge(new[] { spotifyPlaylist with { Title = "Renamed on Spotify", Folders = new() { new("folder-2", "New folder") } } });
+    Check(saved.Load().First().Folders?.Single().Id == "folder-2", "Renaming broke the linked folder organization");
+    saved.Merge(new[] { spotifyPlaylist with { Folders = new() } });
+    Check(saved.Load().First().Folders?.Count == 0, "Moving a playlist to root left a stale folder");
+    return Task.CompletedTask;
+}));
+
+tests.Add(("Library navigation separates folders with identical names and never loses nested playlists", () =>
+{
+    var a = new SavedPlaylist("A", new(), Folders: new() { new("one", "Same name"), new("nested", "Nested") });
+    var b = new SavedPlaylist("B", new(), Folders: new() { new("two", "Same name") });
+    var list = new[] { LibraryPlaylistItem.From(a), LibraryPlaylistItem.From(b) };
+    var root = LibraryNavigation.Level(list, Array.Empty<PlaylistFolder>());
+    Check(root.OfType<LibraryFolderItem>().Count() == 2, "Same-named folders merged");
+    Check(LibraryNavigation.Level(list, a.Folders!).OfType<LibraryPlaylistItem>().Single().Title == "A", "Nested list lost");
+    return Task.CompletedTask;
+}));
+
 tests.Add(("Offscreen UI stays standalone when selecting Spotify references", () => UiPreview.RenderAsync(Path.Combine(temp, "ui"))));
 
 if (!args.Contains("--ci"))

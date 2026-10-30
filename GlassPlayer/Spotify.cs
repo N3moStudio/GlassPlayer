@@ -235,7 +235,7 @@ class Spotify : IProvider
 
     static string? Text(JsonElement item, string key) => item.ValueKind == JsonValueKind.Object && item.TryGetProperty(key, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
     static string? ImageUrl(JsonElement item) => item.ValueKind == JsonValueKind.Object && item.TryGetProperty("images", out var images) && images.ValueKind == JsonValueKind.Array && images.GetArrayLength() > 0 ? Text(images[0], "url") : null;
-    public record Playlist(string Id, string Title, string Artist, string? Art)
+    public record Playlist(string Id, string Title, string Artist, string? Art, List<PlaylistFolder>? Folders = null)
     {
         public string DurationText => "Playlist";
     }

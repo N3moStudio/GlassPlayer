@@ -23,15 +23,23 @@ public partial class MainWindow : Window
 {
     readonly AppSettings cfg;
     readonly SavedLibrary savedLibrary;
-    readonly OfflineLibrary offline = new();
+    readonly OfflineLibrary offline;
     readonly RecentCache<string, List<Track>> playlistCache = new(3, TimeSpan.FromMinutes(5));
     List<Spotify.Playlist>? cachedPlaylists;
     DateTime playlistsLoaded;
     bool viewingDownloads;
+    string? downloadSource;
+    Track? pendingLink;
+    Track? linkingDownload;
+    List<LibraryPlaylistItem> browsePlaylists = new();
+    readonly List<PlaylistFolder> browsePath = new();
+    bool browsingPlaylist;
+    string browseRoot = "Playlists";
     CancellationTokenSource? downloadCancellation;
     List<Track>? currentList;
     string currentListTitle = "Imported music";
     string? currentListCoverArt, currentListSourceUri;
+    List<PlaylistFolder>? currentListFolders;
     bool followSpotify;
     bool appearanceReady;
     int playRequest;
@@ -67,10 +75,11 @@ public partial class MainWindow : Window
 
     public MainWindow() : this(AppSettings.Load(), new SavedLibrary()) { }
 
-    internal MainWindow(AppSettings settings, SavedLibrary library, bool connectLibrary = true)
+    internal MainWindow(AppSettings settings, SavedLibrary library, bool connectLibrary = true, OfflineLibrary? downloads = null)
     {
         cfg = settings;
         savedLibrary = library;
+        offline = downloads ?? new();
         InitializeComponent();
 
         if (connectLibrary) _ = Task.Run(Cache.Cleanup);
@@ -304,14 +313,14 @@ public partial class MainWindow : Window
     {
         await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Loaded);
         var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
-        for (int i = 0; i < Math.Min(List.Items.Count, 14); i++)
+        for (int i = 0; i < Math.Min(List.Items.Count, 8); i++)
         {
             if (List.ItemContainerGenerator.ContainerFromIndex(i) is not ListBoxItem c) continue;
-            var tt = new TranslateTransform(0, 18);
+            var tt = new TranslateTransform(0, 8);
             c.RenderTransform = tt;
-            var begin = TimeSpan.FromMilliseconds(i * 45);
-            c.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(320)) { BeginTime = begin, EasingFunction = ease });
-            tt.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(18, 0, TimeSpan.FromMilliseconds(420)) { BeginTime = begin, EasingFunction = ease });
+            var begin = TimeSpan.FromMilliseconds(i * 15);
+            c.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(180)) { BeginTime = begin, EasingFunction = ease });
+            tt.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(8, 0, TimeSpan.FromMilliseconds(200)) { BeginTime = begin, EasingFunction = ease });
         }
     }
 
@@ -402,7 +411,9 @@ public partial class MainWindow : Window
     {
         if (s is RadioButton { Tag: string name } && providers.TryGetValue(name, out var p)) provider = p;
         if (provider == null) return;
+        ClearLink();
         viewingDownloads = false;
+        DownloadFilters.Visibility = Visibility.Collapsed;
         SearchBox.Clear();
         libraryRequest++;
         libraryCancellation?.Cancel();
@@ -417,12 +428,12 @@ public partial class MainWindow : Window
         else ShowSavedImports();
     }
 
-    async void Library_Click(object s, RoutedEventArgs e) { SearchBox.Clear(); viewingDownloads = false; await LoadPlaylistsAsync(); }
-    async void RefreshLibrary_Click(object s, RoutedEventArgs e) { SearchBox.Clear(); viewingDownloads = false; cachedPlaylists = null; playlistCache.Clear(); await LoadPlaylistsAsync(); }
+    async void Library_Click(object s, RoutedEventArgs e) { ClearLink(); SearchBox.Clear(); viewingDownloads = false; DownloadFilters.Visibility = Visibility.Collapsed; await LoadPlaylistsAsync(); }
+    async void RefreshLibrary_Click(object s, RoutedEventArgs e) { ClearLink(); SearchBox.Clear(); viewingDownloads = false; DownloadFilters.Visibility = Visibility.Collapsed; cachedPlaylists = null; playlistCache.Clear(); await LoadPlaylistsAsync(); }
 
     async void SyncPlaylists_Click(object sender, RoutedEventArgs e)
     {
-        if (syncCancellation != null) return;
+        if (syncCancellation != null || downloadCancellation != null) return;
         if (spotify?.SignedIn != true)
         {
             Status.Text = "Connect your own Spotify account in Settings, then choose Sync playlists.";
@@ -431,7 +442,7 @@ public partial class MainWindow : Window
         }
         var cancellation = new CancellationTokenSource();
         syncCancellation = cancellation;
-        SyncPlaylistsButton.IsEnabled = false;
+        UpdateDownloadButtons();
         CancelSyncButton.Visibility = Visibility.Visible;
         int request = ++libraryRequest;
         libraryCancellation?.Cancel();
@@ -456,7 +467,7 @@ public partial class MainWindow : Window
         {
             syncCancellation = null;
             cancellation.Dispose();
-            SyncPlaylistsButton.IsEnabled = true;
+            UpdateDownloadButtons();
             CancelSyncButton.Visibility = Visibility.Collapsed;
         }
     }
@@ -469,61 +480,227 @@ public partial class MainWindow : Window
         libraryCancellation?.Cancel();
         SearchBox.Clear();
         viewingDownloads = true;
-        try { ShowTracks(offline.Tracks(), "Downloads on this PC · search here to filter. Playlists returns to your library.", "Downloads"); }
+        DownloadFilters.Visibility = Visibility.Visible;
+        ShowDownloads();
+    }
+
+    void ShowDownloads()
+    {
+        try
+        {
+            var tracks = offline.Tracks(downloadSource, SearchBox.Text);
+            BrowseHeading.Text = SpotifyBrowseHeading.Text = "Downloads";
+            ShowTracks(tracks, $"{tracks.Count} downloaded songs · {downloadSource ?? "All sources"}. Playlists returns to your library.", "Downloads");
+        }
         catch (Exception ex) { Status.Text = "Couldn't read downloads: " + ex.Message; }
+    }
+
+    void DownloadSource_Checked(object sender, RoutedEventArgs e)
+    {
+        if (sender is not RadioButton { Tag: string source }) return;
+        downloadSource = source == "All" ? null : source;
+        if (viewingDownloads) ShowDownloads();
+    }
+
+    void ViewDownloads_Click(object sender, RoutedEventArgs e) { ToggleSettings(false); Downloads_Click(sender, e); }
+    void CancelDownloads_Click(object sender, RoutedEventArgs e) => downloadCancellation?.Cancel();
+    async void DownloadAll_Click(object sender, RoutedEventArgs e) => await DownloadSavedAsync(false);
+    async void Resync_Click(object sender, RoutedEventArgs e) => await DownloadSavedAsync(true);
+
+    void UpdateDownloadButtons()
+    {
+        bool busy = downloadCancellation != null;
+        DownloadButton.Content = busy ? "Cancel" : "Download";
+        DownloadButton.IsEnabled = busy || syncCancellation == null && List.SelectedItem is Track { Source: not "Local" };
+        DownloadAllButton.IsEnabled = ResyncButton.IsEnabled = !busy && syncCancellation == null;
+        SyncPlaylistsButton.IsEnabled = !busy && syncCancellation == null;
+        CancelDownloadsButton.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
+        LinkDownloadButton.IsEnabled = !busy && List.SelectedItem is Track { Source: "Spotify" or "SoundCloud" };
+        LinkSelectedButton.IsEnabled = !busy && pendingLink != null && List.SelectedItem is Track { Source: "Local" or "YouTube Music" or "SoundCloud" }
+            && (syncCancellation == null || List.SelectedItem is Track { Source: "Local" });
+        LinkSelectedButton.Content = List.SelectedItem is Track { Source: "Local" } ? "Link this download" : "Download and link";
+        try { UnlinkDownloadButton.IsEnabled = !busy && List.SelectedItem is Track track && offline.HasLink(track); }
+        catch { UnlinkDownloadButton.IsEnabled = false; }
+        LinkDownloadButton.Visibility = List.SelectedItem is Track { Source: "Spotify" or "SoundCloud" } ? Visibility.Visible : Visibility.Collapsed;
+        UnlinkDownloadButton.Visibility = UnlinkDownloadButton.IsEnabled ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    void BeginLink(Track original)
+    {
+        pendingLink = original;
+        LinkDescription.Text = $"Choose audio for {original.Title} · {original.Artist}. Downloading here also links your choice.";
+        LinkBanner.Visibility = Visibility.Visible;
+        UpdateDownloadButtons();
+    }
+    void ClearLink() { pendingLink = null; LinkBanner.Visibility = Visibility.Collapsed; UpdateDownloadButtons(); }
+    void CancelLink_Click(object sender, RoutedEventArgs e)
+    {
+        if (linkingDownload != null && linkingDownload == pendingLink) downloadCancellation?.Cancel();
+        ClearLink();
+    }
+    void LinkDownload_Click(object sender, RoutedEventArgs e)
+    {
+        if (List.SelectedItem is not Track { Source: "Spotify" or "SoundCloud" } original) return;
+        Downloads_Click(sender, e);
+        BeginLink(original);
+    }
+    void UnlinkDownload_Click(object sender, RoutedEventArgs e)
+    {
+        if (List.SelectedItem is not Track original) return;
+        try { offline.Unlink(original); Status.Text = "Unlinked. The audio file is kept; this song can use automatic matching again."; UpdateDownloadButtons(); }
+        catch (Exception ex) { Status.Text = "Couldn't unlink: " + ex.Message; }
+    }
+    async void LinkSelected_Click(object sender, RoutedEventArgs e)
+    {
+        if (pendingLink == null || downloadCancellation != null || List.SelectedItem is not Track track) return;
+        if (track.Source != "Local") { await DownloadTrackAsync(track, pendingLink); return; }
+        try
+        {
+            var original = pendingLink;
+            offline.Link(original, track);
+            ClearLink();
+            Status.Text = $"Linked {original.Title} to {track.Title}. Playing the original song now uses this downloaded file.";
+        }
+        catch (Exception ex) { Status.Text = "Couldn't link: " + ex.Message; }
+    }
+
+    async Task SaveAudioAsync(Track track, CancellationToken cancellation)
+    {
+        cancellation.ThrowIfCancellationRequested();
+        if (offline.Find(track) != null) return;
+        var resolved = await playbackResolver.ResolveAsync(track, cfg.AllowYouTubeMatches, cancellation);
+        await offline.SaveAsync(track, resolved, cancellation);
+    }
+
+    async Task DownloadSavedAsync(bool resync)
+    {
+        if (downloadCancellation != null || syncCancellation != null) return;
+        using var cancellation = new CancellationTokenSource();
+        downloadCancellation = cancellation;
+        UpdateDownloadButtons();
+        DownloadsProgress.Visibility = Visibility.Visible;
+        DownloadsProgress.Value = 0;
+        var failures = new List<DownloadFailure>();
+        string refreshed = "";
+        try
+        {
+            if (resync)
+            {
+                DownloadsProgress.IsIndeterminate = true;
+                Func<CancellationToken, Task<LibrarySyncResult>>? spotifySync = spotify?.SignedIn == true
+                    ? ct => new LibrarySync(savedLibrary, spotify.PlaylistsAsync, spotify.PlaylistAsync).RunAsync(cancellation: ct) : null;
+                var sync = new PlaylistResync(savedLibrary, spotifySync, Importer.PlaylistFromLinkAsync);
+                var result = await sync.RunAsync(message => DownloadsStatus.Text = message, cancellation.Token);
+                failures.AddRange(result.Failures);
+                refreshed = $"{result.Updated} playlists refreshed. ";
+                cachedPlaylists = null; playlistCache.Clear();
+            }
+            DownloadsProgress.IsIndeterminate = false;
+            var batch = new DownloadBatch(t => offline.Find(t) != null, SaveAudioAsync);
+            var resultDownloads = await batch.RunAsync(savedLibrary.Load(), p =>
+            {
+                DownloadsProgress.Maximum = Math.Max(1, p.Total);
+                DownloadsProgress.Value = p.Completed;
+                DownloadsStatus.Text = $"{p.Completed}/{p.Total} · {p.Saved} saved · {p.Existing} already downloaded · {p.Failed} unavailable"
+                    + (p.Title.Length > 0 ? "\nSaving " + p.Title + "…" : "");
+            }, cancellation.Token);
+            failures.AddRange(resultDownloads.Failures);
+            DownloadsStatus.Text = refreshed + $"{resultDownloads.Saved} songs saved · {resultDownloads.Existing} already downloaded."
+                + (resultDownloads.Saved + resultDownloads.Existing + resultDownloads.Failures.Count == 0 ? " Save a playlist to download its songs." : "")
+                + (failures.Count == 0 ? "" : $"\n{failures.Count} couldn't be refreshed or downloaded:\n" + string.Join("\n", failures.Take(3).Select(f => f.Title + ": " + f.Message))
+                    + (failures.Count > 3 ? $"\nAnd {failures.Count - 3} more. Retry to try unfinished songs again." : "\nRetry to try unfinished songs again."));
+            if (viewingDownloads) ShowDownloads();
+        }
+        catch (OperationCanceledException) { if (!closing) DownloadsStatus.Text = "Cancelled. Completed downloads are kept. Download all songs resumes the rest."; }
+        catch (Exception ex) { if (!closing) DownloadsStatus.Text = "Stopped: " + ex.Message + " Completed downloads are kept."; }
+        finally
+        {
+            downloadCancellation = null;
+            DownloadsProgress.IsIndeterminate = false;
+            UpdateDownloadButtons();
+        }
     }
 
     async void Download_Click(object sender, RoutedEventArgs e)
     {
         if (downloadCancellation != null) { downloadCancellation.Cancel(); return; }
-        if (List.SelectedItem is not Track track) return;
+        if (syncCancellation != null || List.SelectedItem is not Track { Source: not "Local" } track) return;
+        await DownloadTrackAsync(track, pendingLink);
+    }
+
+    async Task DownloadTrackAsync(Track track, Track? linkOriginal)
+    {
+        if (downloadCancellation != null || syncCancellation != null) return;
         using var cancellation = new CancellationTokenSource();
         downloadCancellation = cancellation;
-        DownloadButton.Content = "Cancel";
+        linkingDownload = linkOriginal;
+        UpdateDownloadButtons();
         try
         {
             Status.Text = "Saving " + track.Title + " for offline playback…";
-            var resolved = await playbackResolver.ResolveAsync(track, cfg.AllowYouTubeMatches, cancellation.Token);
-            await offline.SaveAsync(track, resolved, cancellation.Token);
-            if (!closing) Status.Text = "Downloaded " + track.Title + " · Music\\GlassPlayer. Open Downloads to play it offline.";
+            DownloadsStatus.Text = Status.Text;
+            await SaveAudioAsync(track, cancellation.Token);
+            cancellation.Token.ThrowIfCancellationRequested();
+            if (linkOriginal != null)
+            {
+                offline.Link(linkOriginal, track);
+                if (pendingLink == linkOriginal) ClearLink();
+            }
+            if (!closing) Status.Text = linkOriginal == null ? "Downloaded " + track.Title + " · Music\\GlassPlayer. Open Downloads to play it offline."
+                : $"Downloaded and linked to {linkOriginal.Title}. Playing that song now uses your chosen file.";
+            if (!closing) DownloadsStatus.Text = Status.Text;
         }
-        catch (OperationCanceledException) { if (!closing) Status.Text = "Download cancelled."; }
-        catch (Exception ex) { if (!closing) Status.Text = "Download failed: " + ex.Message; }
+        catch (OperationCanceledException) { if (!closing) DownloadsStatus.Text = Status.Text = "Download cancelled."; }
+        catch (Exception ex) { if (!closing) DownloadsStatus.Text = Status.Text = "Download failed: " + ex.Message; }
         finally
         {
             downloadCancellation = null;
-            DownloadButton.Content = "Download";
-            DownloadButton.IsEnabled = List.SelectedItem is Track { Source: not "Local" };
+            linkingDownload = null;
+            UpdateDownloadButtons();
         }
     }
 
     async Task LoadPlaylistsAsync()
     {
         if (spotify == null) return;
+        SpotifyBrowseHeading.Text = "Your Spotify playlists";
         int request = ++libraryRequest;
         libraryCancellation?.Cancel();
         libraryCancellation = new CancellationTokenSource();
         currentList = null;
+        LibraryBreadcrumb.Visibility = Visibility.Collapsed;
+        AllSavedSources.Visibility = Visibility.Collapsed;
+        SpotifyTrackActions.Visibility = Visibility.Collapsed;
         SaveImportButton.IsEnabled = SaveSpotifyListButton.IsEnabled = false;
         if (!spotify.SignedIn)
         {
-            List.ItemsSource = null;
+            ShowSavedImports();
             Status.Text = "Connect library in Settings to browse Spotify playlists. SoundCloud and local files play without the Spotify app.";
             return;
         }
+        bool showingSaved = false;
+        if (cachedPlaylists == null)
+        {
+            try
+            {
+                var saved = savedLibrary.Load().Where(p => p.Source == "Spotify").Select(LibraryPlaylistItem.From).ToList();
+                if (saved.Count > 0) { ShowLibrary(saved, "Spotify"); showingSaved = true; }
+            }
+            catch (Exception ex) { Status.Text = "Couldn't read saved playlists: " + ex.Message; }
+        }
         if (cachedPlaylists != null)
         {
-            List.ItemsSource = cachedPlaylists;
+            ShowLibrary(cachedPlaylists.Select(LibraryPlaylistItem.From).ToList(), "Spotify");
             Status.Text = $"{cachedPlaylists.Count} playlists · Refresh to check for changes.";
             if (DateTime.UtcNow - playlistsLoaded < TimeSpan.FromMinutes(5)) return;
         }
-        Status.Text = "Loading your playlists…";
+        Status.Text = showingSaved ? "Saved playlists ready · refreshing from Spotify…" : "Loading your playlists…";
         try
         {
             var playlists = await spotify.PlaylistsAsync(libraryCancellation.Token);
             if (request != libraryRequest) return;
             cachedPlaylists = playlists; playlistsLoaded = DateTime.UtcNow;
-            List.ItemsSource = playlists;
+            ShowLibrary(playlists.Select(LibraryPlaylistItem.From).ToList(), "Spotify");
             Status.Text = playlists.Count == 0 ? "No playlists returned. Check the account connected in Settings." : $"{playlists.Count} playlists · Select one to see its songs.";
         }
         catch (OperationCanceledException) { }
@@ -544,6 +721,7 @@ public partial class MainWindow : Window
                 tracks = await spotify!.PlaylistPreviewAsync(playlist.Id, libraryCancellation.Token, first =>
                 {
                     if (request == libraryRequest) ShowTracks(first, $"{playlist.Title} · first {first.Count} songs ready; loading the rest…", playlist.Title, playlist.Art, LibrarySync.SourceUri(playlist.Id));
+                    if (request == libraryRequest) ShowPlaylistPath(playlist.Title);
                 });
                 // Keep only three small recent playlists; large lists are shown but not retained twice.
                 if (request == libraryRequest && tracks.Count <= 500) playlistCache.Set(playlist.Id, tracks);
@@ -553,6 +731,7 @@ public partial class MainWindow : Window
                 playbackQueue = tracks.ToArray();
             ShowTracks(tracks, $"{playlist.Title} · {tracks.Count} songs · matching audio plays here", playlist.Title,
                 playlist.Art, LibrarySync.SourceUri(playlist.Id));
+            ShowPlaylistPath(playlist.Title);
         }
         catch (OperationCanceledException) { }
         catch (Exception ex) { if (request == libraryRequest) Status.Text = ex.Message; }
@@ -562,13 +741,13 @@ public partial class MainWindow : Window
 
     async Task SearchAsync()
     {
-        if (provider == null || string.IsNullOrWhiteSpace(SearchBox.Text)) return;
-        var query = SearchBox.Text.Trim();
         if (viewingDownloads)
         {
-            ShowTracks(offline.Tracks().Where(t => (t.Title + " " + t.Artist).Contains(query, StringComparison.OrdinalIgnoreCase)).ToList(), "Searching downloaded songs on this PC.", "Downloads");
+            ShowDownloads();
             return;
         }
+        if (provider == null || string.IsNullOrWhiteSpace(SearchBox.Text)) return;
+        var query = SearchBox.Text.Trim();
         int request = ++libraryRequest;
         libraryCancellation?.Cancel();
         libraryCancellation?.Dispose();
@@ -591,10 +770,25 @@ public partial class MainWindow : Window
     {
         FindSoundCloudButton.IsEnabled = List.SelectedItem is Track { Source: "Spotify" };
         FindYouTubeButton.IsEnabled = List.SelectedItem is Track;
-        DownloadButton.IsEnabled = downloadCancellation != null || List.SelectedItem is Track { Source: not "Local" };
-        if (List.SelectedItem is Track { Source: "Spotify" } && !cfg.AllowYouTubeMatches)
+        UpdateDownloadButtons();
+        if (List.SelectedItem is Track { Source: "Spotify" } reference && !cfg.AllowYouTubeMatches && !HasOfflineAudio(reference))
             Status.Text = "Enable matching YouTube audio in Settings, or use Find on YouTube. Spotify stays closed.";
         else if (List.SelectedItem is Track t) _ = PlayAsync(t);
+        else if (List.SelectedItem is LibraryFolderItem folder)
+        {
+            libraryRequest++;
+            libraryCancellation?.Cancel();
+            browsePath.Add(folder.Folder);
+            ShowLibraryLevel();
+        }
+        else if (List.SelectedItem is LibraryPlaylistItem { Playlist: Spotify.Playlist remote }) _ = OpenPlaylistAsync(remote);
+        else if (List.SelectedItem is LibraryPlaylistItem { Playlist: SavedPlaylist local })
+        {
+            libraryRequest++;
+            libraryCancellation?.Cancel();
+            ShowTracks(local.Tracks, $"{local.Title} · {local.Tracks.Count} saved songs", local.Title, local.CoverArt, local.SourceUri);
+            ShowPlaylistPath(local.Title);
+        }
         else if (List.SelectedItem is Spotify.Playlist playlist) _ = OpenPlaylistAsync(playlist);
         else if (List.SelectedItem is SavedPlaylist saved)
             ShowTracks(saved.Tracks, $"{saved.Title} · {saved.Tracks.Count} saved tracks", saved.Title, saved.CoverArt, saved.SourceUri);
@@ -605,6 +799,7 @@ public partial class MainWindow : Window
         if (List.SelectedItem is not Track { Source: "Spotify" } track) return;
         SoundCloudBtn.IsChecked = true;
         viewingDownloads = false;
+        DownloadFilters.Visibility = Visibility.Collapsed;
         SearchBox.Text = $"{track.Artist} {track.Title}";
         await SearchAsync();
     }
@@ -614,14 +809,21 @@ public partial class MainWindow : Window
         if (List.SelectedItem is not Track track) return;
         YouTubeBtn.IsChecked = true;
         viewingDownloads = false;
+        DownloadFilters.Visibility = Visibility.Collapsed;
+        if (track.Source is "Spotify" or "SoundCloud") BeginLink(track);
         SearchBox.Text = $"{track.Artist} {track.Title}";
         await SearchAsync();
     }
 
     // ---- playback ----
+    bool HasOfflineAudio(Track track)
+    {
+        try { return offline.HasLink(track) || offline.Find(track) != null; }
+        catch { return false; }
+    }
     async Task PlayAsync(Track t, bool keepQueue = false)
     {
-        if (t.Source == "Spotify" && !cfg.AllowYouTubeMatches)
+        if (t.Source == "Spotify" && !cfg.AllowYouTubeMatches && !HasOfflineAudio(t))
         {
             Status.Text = "Enable matching YouTube audio in Settings, or use Find on YouTube.";
             return;
@@ -634,7 +836,7 @@ public partial class MainWindow : Window
         if (!keepQueue)
         {
             playbackQueueSource = currentListSourceUri;
-            playbackQueue = currentList?.Where(track => cfg.AllowYouTubeMatches || track.Source != "Spotify").ToArray() ?? new[] { t };
+            playbackQueue = currentList?.Where(track => cfg.AllowYouTubeMatches || track.Source != "Spotify" || HasOfflineAudio(track)).ToArray() ?? new[] { t };
             queueIndex = Math.Max(0, Array.IndexOf(playbackQueue.ToArray(), t));
         }
         followSpotify = false;
@@ -745,10 +947,15 @@ public partial class MainWindow : Window
     // ---- import ----
     void ShowTracks(List<Track> tracks, string message, string? title = null, string? coverArt = null, string? sourceUri = null)
     {
+        LibraryBreadcrumb.Visibility = Visibility.Collapsed;
+        AllSavedSources.Visibility = Visibility.Collapsed;
+        SpotifyTrackActions.Visibility = provider == spotify ? Visibility.Visible : Visibility.Collapsed;
+        FindYouTubeButton.Visibility = DownloadButton.Visibility = Visibility.Visible;
         currentList = tracks;
         currentListTitle = title ?? "Imported music";
         currentListCoverArt = coverArt;
         currentListSourceUri = sourceUri;
+        currentListFolders = null;
         SaveImportButton.IsEnabled = SaveSpotifyListButton.IsEnabled = tracks.Count > 0;
         List.ItemsSource = tracks;
         Status.Text = message;
@@ -758,19 +965,72 @@ public partial class MainWindow : Window
 
     void ShowSavedImports()
     {
+        ClearLink();
+        BrowseHeading.Text = provider?.Name ?? "Playlists";
+        SpotifyBrowseHeading.Text = "Saved Spotify playlists";
+        AllSavedSources.Visibility = provider == spotify ? Visibility.Collapsed : Visibility.Visible;
         libraryRequest++;
         libraryCancellation?.Cancel();
         viewingDownloads = false;
+        DownloadFilters.Visibility = Visibility.Collapsed;
         SearchBox.Clear();
         currentList = null;
         SaveImportButton.IsEnabled = SaveSpotifyListButton.IsEnabled = false;
         try
         {
             var lists = savedLibrary.Load();
-            List.ItemsSource = lists;
-            Status.Text = lists.Count == 0 ? $"Search {provider?.Name} for any song or artist, or import a playlist." : "Saved playlists · all sources. Search above to discover songs beyond your library.";
+            var shown = AllSavedSources.IsChecked == true ? lists : lists.Where(p => p.Source == provider?.Name).ToList();
+            ShowLibrary(shown.Select(LibraryPlaylistItem.From).ToList(), AllSavedSources.IsChecked == true ? "Saved playlists" : provider?.Name ?? "Playlists");
+            Status.Text = shown.Count == 0 ? $"No saved {provider?.Name} playlists. Import one, or search for songs above." : $"{shown.Count} saved playlists · Search above to discover more music.";
         }
         catch (Exception ex) { Status.Text = "Couldn't read saved imports: " + ex.Message; }
+    }
+
+    void SavedSources_Changed(object sender, RoutedEventArgs e) { if (provider != null) ShowSavedImports(); }
+
+    void ShowLibrary(List<LibraryPlaylistItem> playlists, string title)
+    {
+        browsePlaylists = playlists;
+        browseRoot = title;
+        browsePath.Clear();
+        ShowLibraryLevel();
+    }
+
+    void ShowLibraryLevel()
+    {
+        browsingPlaylist = false;
+        currentList = null;
+        AllSavedSources.Visibility = provider == spotify ? Visibility.Collapsed : Visibility.Visible;
+        SaveImportButton.IsEnabled = SaveSpotifyListButton.IsEnabled = false;
+        SpotifyTrackActions.Visibility = Visibility.Collapsed;
+        FindYouTubeButton.Visibility = DownloadButton.Visibility = Visibility.Collapsed;
+        List.ItemsSource = LibraryNavigation.Level(browsePlaylists, browsePath);
+        LibraryBreadcrumb.Visibility = Visibility.Visible;
+        LibraryBackButton.Visibility = browsePath.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        LibraryPathText.Text = string.Join(" › ", new[] { browseRoot }.Concat(browsePath.Select(p => p.Title)));
+        LibraryPathText.ToolTip = LibraryPathText.Text;
+        Status.Text = "Choose a folder or playlist. Search above to discover songs.";
+        listScroll?.ScrollToTop();
+    }
+
+    void ShowPlaylistPath(string title)
+    {
+        currentListFolders = new(browsePath);
+        browsingPlaylist = true;
+        LibraryBreadcrumb.Visibility = Visibility.Visible;
+        LibraryBackButton.Visibility = Visibility.Visible;
+        LibraryPathText.Text = string.Join(" › ", new[] { browseRoot }.Concat(browsePath.Select(p => p.Title)).Append(title));
+        LibraryPathText.ToolTip = LibraryPathText.Text;
+    }
+
+    void LibraryBack_Click(object sender, RoutedEventArgs e)
+    {
+        libraryRequest++;
+        libraryCancellation?.Cancel();
+        ClearLink();
+        SearchBox.Clear();
+        if (!browsingPlaylist && browsePath.Count > 0) browsePath.RemoveAt(browsePath.Count - 1);
+        ShowLibraryLevel();
     }
 
     void SavedImports_Click(object sender, RoutedEventArgs e)
@@ -785,7 +1045,7 @@ public partial class MainWindow : Window
         if (currentList is not { Count: > 0 } tracks) return;
         try
         {
-            savedLibrary.Save(currentListTitle, tracks, currentListCoverArt, currentListSourceUri);
+            savedLibrary.Save(currentListTitle, tracks, currentListCoverArt, currentListSourceUri, currentListFolders);
             SaveImportButton.IsEnabled = SaveSpotifyListButton.IsEnabled = false;
             Status.Text = "Saved. Open Playlists to return to this list.";
         }
@@ -822,6 +1082,10 @@ public partial class MainWindow : Window
         if (dlg.ShowDialog() != true) return;
         var tracks = dlg.FileNames.Select(LocalFiles.ToTrack).ToList();
         SoundCloudBtn.IsChecked = true;
+        ClearLink();
+        viewingDownloads = false;
+        DownloadFilters.Visibility = Visibility.Collapsed;
+        SearchBox.Clear();
         libraryRequest++;
         libraryCancellation?.Cancel();
         ShowTracks(tracks, $"Imported {tracks.Count} file{(tracks.Count == 1 ? "" : "s")} · Save list to keep it", Path.GetFileName(Path.GetDirectoryName(dlg.FileNames[0])));
@@ -847,7 +1111,7 @@ public partial class MainWindow : Window
                 tracks = await spotify.PlaylistAsync(sp.Groups[1].Value);
                 var metadata = (await spotify.PlaylistsAsync()).FirstOrDefault(p => p.Id == sp.Groups[1].Value);
                 imported = new ImportedPlaylist(metadata?.Title ?? Importer.TitleFromLink(link), tracks, metadata?.Art,
-                    $"https://open.spotify.com/playlist/{sp.Groups[1].Value}");
+                    $"https://open.spotify.com/playlist/{sp.Groups[1].Value}", metadata?.Folders);
             }
             else if (source is "YouTube Music" or "SoundCloud")
             {
@@ -864,10 +1128,16 @@ public partial class MainWindow : Window
                 libraryCancellation?.Cancel();
                 var isSpotify = tracks[0].Source == "Spotify";
                 if (isSpotify) SpotifyBtn.IsChecked = true;
+                else if (tracks[0].Source == "YouTube Music") YouTubeBtn.IsChecked = true;
                 else SoundCloudBtn.IsChecked = true;
+                ClearLink();
+                viewingDownloads = false;
+                DownloadFilters.Visibility = Visibility.Collapsed;
+                SearchBox.Clear();
                 libraryRequest++; // Invalidate any tab's pending search/library load.
                 ShowTracks(tracks, isSpotify ? $"{tracks.Count} songs · matching audio plays here" : $"Imported {tracks.Count} tracks · Save list to keep them",
                     imported?.Title ?? Importer.TitleFromLink(link), imported?.CoverArt, imported?.SourceUri);
+                currentListFolders = imported?.Folders;
                 ImportBox.Text = "";
                 ToggleImport(false);
             }
@@ -969,6 +1239,7 @@ public partial class MainWindow : Window
         {
             cachedPlaylists = null; playlistCache.Clear();
             syncCancellation?.Cancel();
+            downloadCancellation?.Cancel();
             if (activeSp != null) { await Safe(spotify.PauseAsync); activeSp = null; SetPlaying(false); }
             spotify.SignOut();
             libraryRequest++;

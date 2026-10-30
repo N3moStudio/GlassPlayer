@@ -74,32 +74,72 @@ sealed class SpotifyWebLibrary
     {
         var result = new List<Spotify.Playlist> { new("liked", "Liked Songs", "Your saved tracks", null) };
         var ids = new HashSet<string>();
-        var pages = new HashSet<string>();
-        for (int offset = 0; ; )
+        var visitedFolders = new HashSet<string>();
+        var pending = new Queue<(string? Uri, List<PlaylistFolder> Path)>();
+        pending.Enqueue((null, new()));
+        while (pending.Count > 0)
         {
-            using var doc = await Query("libraryV3", LibraryHash, new { filters = Array.Empty<string>(), order = (string?)null,
-                textFilter = "", features = new[] { "LIKED_SONGS", "YOUR_EPISODES_V2", "PRERELEASES", "EVENTS" },
-                limit = 100, offset, flatten = true, expandedFolders = Array.Empty<string>(), folderUri = (string?)null, includeFoldersWhenFlattening = false }, cancellation);
-            var page = At(doc.RootElement, "data", "me", "libraryV3");
-            var items = RequiredItems(page);
-            if (items.GetArrayLength() == 0) break;
-            if (!pages.Add(items.GetRawText())) throw new InvalidOperationException("Spotify repeated a library page. Refresh later; the partial list was not saved.");
-            foreach (var entry in items.EnumerateArray())
+            cancellation.ThrowIfCancellationRequested();
+            var batch = new List<Task<(List<Spotify.Playlist> Playlists, List<(string Uri, List<PlaylistFolder> Path)> Children)>>();
+            while (pending.Count > 0 && batch.Count < 2)
             {
-                var item = At(entry, "item"); var data = At(item, "data");
-                string? uri = Text(item, "uri") ?? Text(item, "_uri") ?? Text(data, "uri");
-                if (uri == null || !uri.StartsWith("spotify:playlist:", StringComparison.Ordinal)) continue;
-                var id = uri[17..];
-                if (!ids.Add(id)) continue;
-                var images = At(data, "images", "items");
-                string? art = images.ValueKind == JsonValueKind.Array && images.GetArrayLength() > 0 ? Image(At(images[0], "sources")) : null;
-                result.Add(new Spotify.Playlist(id, Text(data, "name") ?? "Untitled playlist",
-                    Text(At(data, "ownerV2", "data"), "name") ?? "Spotify playlist", art));
+                var level = pending.Dequeue();
+                batch.Add(ReadLevel(level.Uri, level.Path));
             }
-            offset += items.GetArrayLength();
-            if (Complete(page, items, offset, 100)) break;
+            foreach (var level in await Task.WhenAll(batch))
+            {
+                foreach (var playlist in level.Playlists) if (ids.Add(playlist.Id)) result.Add(playlist);
+                foreach (var child in level.Children)
+                {
+                    if (!visitedFolders.Add(child.Uri) || child.Path.Count > 32 || visitedFolders.Count > 2000)
+                        throw new InvalidOperationException("Spotify returned an invalid or repeated folder. Saved playlists were not changed.");
+                    pending.Enqueue(child);
+                }
+            }
         }
         return result;
+
+        async Task<(List<Spotify.Playlist> Playlists, List<(string Uri, List<PlaylistFolder> Path)> Children)> ReadLevel(string? folderUri, List<PlaylistFolder> folders)
+        {
+            var pages = new HashSet<string>();
+            var playlists = new List<Spotify.Playlist>();
+            var children = new List<(string Uri, List<PlaylistFolder> Path)>();
+            for (int offset = 0; ; )
+            {
+                using var doc = await Query("libraryV3", LibraryHash, new { filters = new[] { "Playlists" }, order = (string?)null,
+                    textFilter = "", features = new[] { "LIKED_SONGS", "YOUR_EPISODES_V2", "PRERELEASES", "EVENTS" },
+                    limit = 100, offset, flatten = false, expandedFolders = Array.Empty<string>(), folderUri, includeFoldersWhenFlattening = true }, cancellation);
+                var page = At(doc.RootElement, "data", "me", "libraryV3");
+                var items = RequiredItems(page);
+                if (items.GetArrayLength() == 0) break;
+                if (!pages.Add(items.GetRawText())) throw new InvalidOperationException("Spotify repeated a library page. Refresh later; the partial list was not saved.");
+                foreach (var entry in items.EnumerateArray())
+                {
+                    var item = At(entry, "item"); var data = At(item, "data");
+                    string? uri = Text(item, "uri") ?? Text(item, "_uri") ?? Text(data, "uri");
+                    if (Text(item, "__typename")?.Contains("Folder", StringComparison.Ordinal) == true
+                        || Text(data, "__typename")?.Contains("Folder", StringComparison.Ordinal) == true
+                        || uri?.StartsWith("spotify:", StringComparison.Ordinal) == true && uri.Contains(":folder:", StringComparison.Ordinal))
+                    {
+                        var name = Text(data, "name") ?? Text(item, "name");
+                        if (uri == null || name == null)
+                            throw new InvalidOperationException("Spotify returned an invalid or repeated folder. Saved playlists were not changed.");
+                        children.Add((uri, new(folders) { new(uri, name) }));
+                        continue;
+                    }
+                    if (uri == null || !uri.StartsWith("spotify:playlist:", StringComparison.Ordinal)) continue;
+                    var id = uri[17..];
+                    var images = At(data, "images", "items");
+                    string? art = images.ValueKind == JsonValueKind.Array && images.GetArrayLength() > 0 ? Image(At(images[0], "sources")) : null;
+                    playlists.Add(new Spotify.Playlist(id, Text(data, "name") ?? "Untitled playlist",
+                        Text(At(data, "ownerV2", "data"), "name") ?? "Spotify playlist", art, new(folders)));
+                }
+                offset += items.GetArrayLength();
+                if (Complete(page, items, offset, 100)) break;
+                if (offset > 100000) throw new InvalidOperationException("Spotify returned an unexpectedly large library.");
+            }
+            return (playlists, children);
+        }
     }
 
     public Task<List<Track>> PlaylistAsync(string id, CancellationToken cancellation = default)

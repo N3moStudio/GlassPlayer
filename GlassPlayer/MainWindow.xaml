@@ -379,21 +379,20 @@
                             <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
                         <StackPanel x:Name="LibraryBar" Grid.Row="0" Visibility="Collapsed" Margin="0,0,0,12">
-                            <TextBlock Text="Your Spotify playlists" FontSize="16" FontWeight="SemiBold"/>
+                            <TextBlock x:Name="SpotifyBrowseHeading" Text="Your Spotify playlists" FontSize="16" FontWeight="SemiBold"/>
                             <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
                                 <Button x:Name="LibraryButton" Style="{StaticResource Action}" Content="My playlists" Click="Library_Click"/>
-                                <Button Style="{StaticResource Action}" Content="Connect / Settings" Click="Settings_Click" Margin="8,0,0,0"/>
+                                <Button Style="{StaticResource Action}" Content="Saved" Click="SavedImports_Click" Margin="8,0,0,0" ToolTip="Browse your synced playlists without waiting for Spotify"/>
+                                <Button Style="{StaticResource Action}" Content="Refresh" Click="RefreshLibrary_Click" Margin="8,0,0,0"/>
                             </StackPanel>
                             <WrapPanel Orientation="Horizontal" Margin="0,8,0,0">
                                 <Button x:Name="SyncPlaylistsButton" Style="{StaticResource Action}" Content="Sync playlists" Click="SyncPlaylists_Click" ToolTip="Save or refresh playlists from your connected account on this PC"/>
                                 <Button x:Name="CancelSyncButton" Style="{StaticResource Action}" Content="Cancel sync" Click="CancelSync_Click" Visibility="Collapsed" Margin="8,0,0,0"/>
-                                <Button Style="{StaticResource Action}" Content="Refresh" Click="RefreshLibrary_Click" Margin="8,0,0,0"/>
                                 <Button Style="{StaticResource Action}" Content="Downloads" Click="Downloads_Click" Margin="8,0,0,0"/>
                             </WrapPanel>
-                            <TextBlock Text="Your playlists, with matching audio inside GlassPlayer. Spotify stays closed." FontSize="12" Opacity=".85" TextWrapping="Wrap" Margin="0,8,0,0"/>
-                            <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                            <StackPanel x:Name="SpotifyTrackActions" Orientation="Horizontal" Margin="0,8,0,0" Visibility="Collapsed">
                                 <Button x:Name="FindSoundCloudButton" Style="{StaticResource Action}" Content="Find on SoundCloud" IsEnabled="False" Click="FindSoundCloud_Click"/>
-                                <Button x:Name="SaveSpotifyListButton" Style="{StaticResource Action}" Content="Save list" IsEnabled="False" Click="SaveImport_Click" Margin="8,0,0,0"/>
+                                <Button x:Name="SaveSpotifyListButton" Style="{StaticResource Action}" Content="Save list" IsEnabled="False" Click="SaveImport_Click" Margin="8,0,0,0" ToolTip="Save playlist names and songs on this PC. Download audio separately."/>
                             </StackPanel>
                         </StackPanel>
                         <StackPanel x:Name="SavedBar" Grid.Row="0" Margin="0,0,0,12">
@@ -401,11 +400,12 @@
                             <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
                                 <Button x:Name="PlaylistsHomeButton" Style="{StaticResource Action}" Content="Playlists" Click="SavedImports_Click" ToolTip="Clear search and return to your saved playlists"/>
                                 <Button x:Name="DownloadsButton" Style="{StaticResource Action}" Content="Downloads" Click="Downloads_Click" Margin="8,0,0,0"/>
-                                <Button x:Name="SaveImportButton" Style="{StaticResource Action}" Content="Save list" Click="SaveImport_Click" Margin="8,0,0,0" IsEnabled="False"/>
+                                <Button x:Name="SaveImportButton" Style="{StaticResource Action}" Content="Save list" Click="SaveImport_Click" Margin="8,0,0,0" IsEnabled="False" ToolTip="Save playlist names and songs on this PC. Download audio separately."/>
                             </StackPanel>
+                            <CheckBox x:Name="AllSavedSources" Content="All saved sources" Foreground="White" FontSize="12" Opacity=".8" Margin="2,10,0,0" Checked="SavedSources_Changed" Unchecked="SavedSources_Changed"/>
                         </StackPanel>
                         <Grid Grid.Row="1" Margin="0,0,0,8">
-                            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition/>
                                 <ColumnDefinition Width="Auto"/>
@@ -414,10 +414,33 @@
                             <Button Grid.Column="1" Style="{StaticResource Action}" Content="Import" Margin="8,0,0,0" Click="Import_Click"/>
                             <Button x:Name="FindYouTubeButton" Grid.Row="1" Style="{StaticResource Action}" Content="Find on YouTube" IsEnabled="False" Click="FindYouTube_Click" Margin="0,8,0,0"/>
                             <Button x:Name="DownloadButton" Grid.Row="1" Grid.Column="1" Style="{StaticResource Action}" Content="Download" IsEnabled="False" Click="Download_Click" Margin="8,8,0,0" ToolTip="Save this song in Music\GlassPlayer for offline playback; click again to cancel"/>
+                            <Button x:Name="LinkDownloadButton" Grid.Row="2" Style="{StaticResource Action}" Content="Link a download" IsEnabled="False" Click="LinkDownload_Click" Margin="0,8,0,0" ToolTip="Choose a downloaded recording to play for this Spotify or SoundCloud song"/>
+                            <Button x:Name="UnlinkDownloadButton" Grid.Row="2" Grid.Column="1" Style="{StaticResource Action}" Content="Unlink" IsEnabled="False" Click="UnlinkDownload_Click" Margin="8,8,0,0"/>
+                            <WrapPanel x:Name="DownloadFilters" Grid.Row="3" Grid.ColumnSpan="2" Margin="0,8,0,0" Visibility="Collapsed" AutomationProperties.Name="Downloaded audio source">
+                                <RadioButton x:Name="AllDownloadsFilter" Style="{StaticResource Pill}" GroupName="DownloadSource" Content="All" Tag="All" IsChecked="True" Checked="DownloadSource_Checked"/>
+                                <RadioButton x:Name="SoundCloudDownloadsFilter" Style="{StaticResource Pill}" GroupName="DownloadSource" Content="SoundCloud" Tag="SoundCloud" Checked="DownloadSource_Checked"/>
+                                <RadioButton x:Name="YouTubeDownloadsFilter" Style="{StaticResource Pill}" GroupName="DownloadSource" Content="YouTube Music" Tag="YouTube Music" Checked="DownloadSource_Checked"/>
+                            </WrapPanel>
+                            <Border x:Name="LinkBanner" Grid.Row="4" Grid.ColumnSpan="2" Background="#1FFFFFFF" CornerRadius="12" Padding="10" Margin="0,8,0,0" Visibility="Collapsed">
+                                <StackPanel>
+                                    <TextBlock x:Name="LinkDescription" TextWrapping="Wrap" FontSize="12"/>
+                                    <WrapPanel Margin="0,8,0,0">
+                                        <Button x:Name="LinkSelectedButton" Style="{StaticResource Action}" Content="Download and link" IsEnabled="False" Click="LinkSelected_Click" Margin="0,0,8,0"/>
+                                        <Button Style="{StaticResource Action}" Content="Cancel link" Click="CancelLink_Click"/>
+                                    </WrapPanel>
+                                </StackPanel>
+                            </Border>
+                            <Grid x:Name="LibraryBreadcrumb" Grid.Row="5" Grid.ColumnSpan="2" Margin="0,8,0,0" Visibility="Collapsed">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition/></Grid.ColumnDefinitions>
+                                <Button x:Name="LibraryBackButton" Style="{StaticResource Action}" Content="Back" Click="LibraryBack_Click" Margin="0,0,8,0"/>
+                                <TextBlock x:Name="LibraryPathText" Grid.Column="1" Text="Playlists" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" FontSize="12" Opacity=".85"/>
+                            </Grid>
                         </Grid>
                         <ListBox x:Name="List" Grid.Row="2" Background="Transparent" BorderThickness="0" Foreground="White"
                      ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.VerticalScrollBarVisibility="Hidden" ScrollViewer.CanContentScroll="True" VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling" VirtualizingPanel.ScrollUnit="Pixel" SelectionChanged="List_SelectionChanged">
-                            <ListBox.ItemTemplate>
+                            <ListBox.ItemTemplateSelector>
+                              <local:LibraryTemplateSelector>
+                               <local:LibraryTemplateSelector.TrackTemplate>
                                 <DataTemplate>
                                     <Grid>
                                         <Grid.ColumnDefinitions>
@@ -437,7 +460,42 @@
                                         <TextBlock Grid.Column="2" Text="{Binding DurationText}" FontSize="12" Opacity=".5" VerticalAlignment="Center" Margin="10,0,2,0"/>
                                     </Grid>
                                 </DataTemplate>
-                            </ListBox.ItemTemplate>
+                               </local:LibraryTemplateSelector.TrackTemplate>
+                               <local:LibraryTemplateSelector.PlaylistTemplate>
+                                <DataTemplate>
+                                    <Grid Margin="0,3">
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="56"/><ColumnDefinition/><ColumnDefinition Width="20"/></Grid.ColumnDefinitions>
+                                        <Border Width="56" Height="56" CornerRadius="13" Background="#20FFFFFF">
+                                            <Grid>
+                                                <TextBlock Text="&#xE8F1;" FontFamily="Segoe Fluent Icons" FontSize="22" HorizontalAlignment="Center" VerticalAlignment="Center" Opacity=".6"/>
+                                                <Border CornerRadius="13"><Border.Background><ImageBrush ImageSource="{Binding Art, Converter={StaticResource Artwork}}" Stretch="UniformToFill"/></Border.Background></Border>
+                                            </Grid>
+                                        </Border>
+                                        <StackPanel Grid.Column="1" Margin="12,0,6,0" VerticalAlignment="Center">
+                                            <TextBlock Text="{Binding Title}" FontSize="14" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+                                            <TextBlock Text="{Binding Artist}" FontSize="12" Opacity=".75" TextTrimming="CharacterEllipsis" Margin="0,4,0,0"/>
+                                        </StackPanel>
+                                        <TextBlock Grid.Column="2" Text="›" FontSize="23" Opacity=".65" VerticalAlignment="Center"/>
+                                    </Grid>
+                                </DataTemplate>
+                               </local:LibraryTemplateSelector.PlaylistTemplate>
+                               <local:LibraryTemplateSelector.FolderTemplate>
+                                <DataTemplate>
+                                    <Grid Margin="0,3">
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="56"/><ColumnDefinition/><ColumnDefinition Width="20"/></Grid.ColumnDefinitions>
+                                        <Border Width="56" Height="56" CornerRadius="13" Background="#24D6E6FF">
+                                            <TextBlock Text="&#xE8B7;" FontFamily="Segoe Fluent Icons" FontSize="25" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                        </Border>
+                                        <StackPanel Grid.Column="1" Margin="12,0,6,0" VerticalAlignment="Center">
+                                            <TextBlock Text="{Binding Title}" FontSize="14" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+                                            <TextBlock Text="{Binding Artist}" FontSize="12" Opacity=".75" Margin="0,4,0,0"/>
+                                        </StackPanel>
+                                        <TextBlock Grid.Column="2" Text="›" FontSize="23" Opacity=".65" VerticalAlignment="Center"/>
+                                    </Grid>
+                                </DataTemplate>
+                               </local:LibraryTemplateSelector.FolderTemplate>
+                              </local:LibraryTemplateSelector>
+                            </ListBox.ItemTemplateSelector>
                         </ListBox>
                         <TextBlock x:Name="Status" Grid.Row="3" Text="Search for a song or artist." Opacity=".85" TextWrapping="Wrap" Margin="4,8,4,0"/>
                     </Grid>
@@ -489,6 +547,17 @@
                             <TextBlock Text="Settings" FontSize="24" FontWeight="SemiBold"/>
                             <Button Style="{StaticResource Round}" Width="32" Height="32" FontSize="12" Content="&#xE711;" HorizontalAlignment="Right" Click="CloseSettings_Click"/>
                         </Grid>
+
+                        <TextBlock Style="{StaticResource Section}" Text="Offline music"/>
+                        <TextBlock Text="Download all songs from your saved playlists to Music\GlassPlayer. Resync refreshes connected Spotify and linked SoundCloud / YouTube playlists, then downloads new songs. Existing files are kept and skipped." FontSize="13" TextWrapping="Wrap" Opacity=".85" Margin="0,8,0,10"/>
+                        <WrapPanel>
+                            <Button x:Name="DownloadAllButton" Style="{StaticResource Action}" Content="Download all songs" Click="DownloadAll_Click" Margin="0,0,8,8"/>
+                            <Button x:Name="ResyncButton" Style="{StaticResource Action}" Content="Resync playlists" Click="Resync_Click" Margin="0,0,8,8"/>
+                            <Button Style="{StaticResource Action}" Content="View downloads" Click="ViewDownloads_Click" Margin="0,0,0,8"/>
+                        </WrapPanel>
+                        <ProgressBar x:Name="DownloadsProgress" Height="5" Minimum="0" Maximum="1" Visibility="Collapsed" Margin="0,2,0,8" AutomationProperties.Name="Download progress"/>
+                        <TextBlock x:Name="DownloadsStatus" Text="Save a playlist first, or use Resync for your connected Spotify library. Unavailable songs are reported and skipped." FontSize="12" TextWrapping="Wrap" Opacity=".85" AutomationProperties.LiveSetting="Polite"/>
+                        <Button x:Name="CancelDownloadsButton" Style="{StaticResource Action}" Content="Cancel downloads" Click="CancelDownloads_Click" HorizontalAlignment="Left" Visibility="Collapsed" Margin="0,8,0,0"/>
 
                         <TextBlock Style="{StaticResource Section}" Text="Spotify"/>
                         <TextBlock Text="Browse and save your Spotify playlists, then play matching YouTube audio inside GlassPlayer. Original names and artwork stay in your library. Show Spotify opens its separate desktop controls only when you choose it." FontSize="13" TextWrapping="Wrap" Opacity=".85" Margin="0,8,0,12"/>

@@ -1,5 +1,6 @@
 using System.IO;
 using System.Reflection;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -26,10 +27,20 @@ static class UiPreview
                     System.Windows.Threading.Dispatcher.PushFrame(frame);
                 }
                 Directory.CreateDirectory(directory);
+                var offlineFolder = Path.GetFullPath(Path.Combine(directory, "downloads"));
+                Directory.CreateDirectory(offlineFolder);
+                File.WriteAllBytes(Path.Combine(offlineFolder, "fixture.m4a"), new byte[] { 1 });
+                var downloadTrack = new Track("download-fixture", "My chosen recording", "Artist", null, null, "YouTube Music", null, 200000);
+                File.WriteAllText(Path.Combine(offlineFolder, "library.json"), JsonSerializer.Serialize(new[] {
+                    new OfflineTrack(downloadTrack, "YouTube Music", "fixture.m4a", null),
+                    new OfflineTrack(downloadTrack with { Id = "second-download", Source = "SoundCloud", Title = "Another recording" }, "SoundCloud", "fixture.m4a", null) }));
+                var offline = new OfflineLibrary(offlineFolder);
+                var saved = new SavedLibrary(Path.Combine(directory, "fixture-library.json"));
                 var settings = new AppSettings { AmbientGlow = false, GlassTint = .60, AllowYouTubeMatches = false };
-                var window = new MainWindow(settings, new SavedLibrary(Path.Combine(directory, "fixture-library.json")), connectLibrary: false);
+                var window = new MainWindow(settings, saved, connectLibrary: false, downloads: offline);
                 T Element<T>(string name) where T : FrameworkElement => (T)window.FindName(name);
                 object? Field(object owner, string name) => owner.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(owner);
+                void Click(string name) => typeof(MainWindow).GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, new object[] { window, new RoutedEventArgs() });
                 var root = Element<Grid>("Root");
                 root.BeginAnimation(UIElement.OpacityProperty, null);
                 root.Opacity = 1;
@@ -109,6 +120,11 @@ static class UiPreview
                     surface.Measure(new Size(width, height));
                     surface.Arrange(new Rect(0, 0, width, height));
                     surface.UpdateLayout();
+                    var animationFrame = new System.Windows.Threading.DispatcherFrame();
+                    var settle = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(650) };
+                    settle.Tick += (_, _) => { settle.Stop(); animationFrame.Continue = false; };
+                    settle.Start();
+                    System.Windows.Threading.Dispatcher.PushFrame(animationFrame);
                     var bitmap = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
                     bitmap.Render(surface);
                     using var stream = File.Create(Path.Combine(directory, name + ".png"));
@@ -125,6 +141,67 @@ static class UiPreview
                 Render("player-clear", 1020, 660);
                 Element<Slider>("GlassTintSlider").Value = 95;
                 Render("player-readable", 1020, 660);
+                settings.AllowYouTubeMatches = false;
+                showTracks.Invoke(window, new object?[] { new List<Track> { tracks[0] }, "", "Original playlist", null, null });
+                list.SelectedIndex = 0;
+                youtube.SearchCompletion = null;
+                Click("FindYouTube_Click");
+                Drain();
+                if (Field(window, "pendingLink") is not Track { Source: "Spotify" } || Element<Border>("LinkBanner").Visibility != Visibility.Visible)
+                    throw new Exception("Find on YouTube forgot the original song for linking");
+                using (var cancelLink = new CancellationTokenSource())
+                {
+                    typeof(MainWindow).GetField("downloadCancellation", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, cancelLink);
+                    typeof(MainWindow).GetField("linkingDownload", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, Field(window, "pendingLink"));
+                    Click("CancelLink_Click");
+                    if (!cancelLink.IsCancellationRequested || Field(window, "pendingLink") != null)
+                        throw new Exception("Cancel link left its download/link operation running");
+                    typeof(MainWindow).GetField("downloadCancellation", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, null);
+                    typeof(MainWindow).GetField("linkingDownload", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, null);
+                }
+                typeof(MainWindow).GetMethod("BeginLink", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, new object[] { tracks[0] });
+                Click("Downloads_Click");
+                Element<RadioButton>("YouTubeDownloadsFilter").IsChecked = true;
+                if (((IEnumerable<Track>)list.ItemsSource).Count() != 1 || ((IEnumerable<Track>)list.ItemsSource).Single().DownloadedFrom != "YouTube Music")
+                    throw new Exception("Download source chip displayed the wrong collection");
+                var localProvider = new DeferredProvider();
+                ((Dictionary<string, IProvider>)Field(window, "providers")!)["Local"] = localProvider;
+                list.SelectedIndex = 0;
+                if (!Element<Button>("LinkSelectedButton").IsEnabled) throw new Exception("Downloaded recording cannot be linked");
+                Render("link-download-860", 860, 580);
+                Click("LinkSelected_Click");
+                if (!offline.HasLink(tracks[0]) || Element<Border>("LinkBanner").Visibility != Visibility.Collapsed)
+                    throw new Exception("Explicit song link was not persisted");
+                localProvider.Pending[0].SetResult(null);
+                Drain();
+                Render("downloads-youtube-860", 860, 580);
+                Element<TextBox>("SearchBox").Text = "missing";
+                var filterSearch = (Task)typeof(MainWindow).GetMethod("SearchAsync", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, null)!;
+                if (((IEnumerable<Track>)list.ItemsSource).Any()) throw new Exception("Download search ignored the query");
+                Element<TextBox>("SearchBox").Clear();
+                _ = (Task)typeof(MainWindow).GetMethod("SearchAsync", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, null)!;
+                if (((IEnumerable<Track>)list.ItemsSource).Count() != 1) throw new Exception("Clearing download search did not restore its source filter");
+                Element<RadioButton>("AllDownloadsFilter").IsChecked = true;
+                if (((IEnumerable<Track>)list.ItemsSource).Count() != 2) throw new Exception("All downloads did not restore the collection");
+                Element<RadioButton>("SoundCloudBtn").IsChecked = true;
+                Drain();
+                saved.Merge(new[] {
+                    new SavedPlaylist("Night drive", new() { first }, SourceUri: "https://soundcloud.com/example/sets/night", Folders: new() { new("moods", "Moods"), new("evening", "Evening") }),
+                    new SavedPlaylist("Quiet favorites", new() { second }, SourceUri: "https://soundcloud.com/example/sets/quiet", Folders: new() { new("moods", "Moods") }),
+                    new SavedPlaylist("Daily mix", new() { first }, SourceUri: "https://soundcloud.com/example/sets/daily") });
+                Click("SavedImports_Click");
+                Render("playlist-folders-860", 860, 580);
+                list.SelectedIndex = 0;
+                if (!list.Items.OfType<LibraryFolderItem>().Any() || !Element<TextBlock>("LibraryPathText").Text.Contains("Moods"))
+                    throw new Exception("Folder navigation lost its path");
+                list.SelectedIndex = 0;
+                list.SelectedIndex = 0;
+                if (list.ItemsSource is not IEnumerable<Track> || !Element<TextBlock>("LibraryPathText").Text.Contains("Evening"))
+                    throw new Exception("Nested playlist did not open");
+                Click("LibraryBack_Click");
+                if (list.ItemsSource is IEnumerable<Track> || !list.Items.OfType<LibraryPlaylistItem>().Any())
+                    throw new Exception("Back did not return to the playlist's folder");
+                Render("playlist-inside-folder-860", 860, 580);
                 Element<RadioButton>("SpotifyBtn").IsChecked = true;
                 Drain();
                 Render("spotify-sync-860", 860, 580);
@@ -136,6 +213,15 @@ static class UiPreview
                 Element<Border>("Sheet").Opacity = 1;
                 Element<Border>("Sheet").RenderTransform = Transform.Identity;
                 Render("settings-860", 860, 580);
+                var allButton = Element<Button>("DownloadAllButton");
+                if (!allButton.IsEnabled || allButton.TransformToAncestor(surface).TransformBounds(new Rect(allButton.RenderSize)).Bottom > 564)
+                    throw new Exception("Bulk download controls are not visible at minimum size");
+                Element<ProgressBar>("DownloadsProgress").Visibility = Visibility.Visible;
+                Element<ProgressBar>("DownloadsProgress").Maximum = 120;
+                Element<ProgressBar>("DownloadsProgress").Value = 42;
+                Element<TextBlock>("DownloadsStatus").Text = "42/120 · 30 saved · 12 already downloaded · 0 unavailable\nSaving the next song…";
+                Element<Button>("CancelDownloadsButton").Visibility = Visibility.Visible;
+                Render("settings-download-progress-860", 860, 580);
                 ((ScrollViewer)Element<Border>("Sheet").Child).ScrollToBottom();
                 Render("settings-appearance-860", 860, 580);
                 completion.SetResult();
