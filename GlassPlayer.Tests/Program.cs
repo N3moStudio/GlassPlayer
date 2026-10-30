@@ -401,8 +401,101 @@ tests.Add(("Matching requires artist, title, version and duration and rejects am
         match with { Artist = "Someone else" }, match with { DurationMs = 144000 }, match with { DurationMs = 0 }, match with { Source = "SoundCloud" } })
         Check(PlaybackResolver.FindMatch(original, new[] { wrong }) == null, "Uncertain recording chosen");
     Check(PlaybackResolver.FindMatch(original, new[] { match, match with { Id = "second" } }) == null, "Ambiguous recording chosen");
+    var catalog = match with { CatalogRecording = true };
+    Check(PlaybackResolver.FindMatch(original, new[] { catalog, catalog with { Id = "album-copy" } }) == catalog, "Identical catalog copies rejected");
+    Check(PlaybackResolver.FindMatch(original, new[] { catalog, catalog with { Id = "different-cut", DurationMs = 139000 } }) == null, "Conflicting catalog durations accepted");
     Check(PlaybackResolver.FindMatch(original with { DurationMs = 0 }, new[] { match }) == null, "Unknown source duration matched");
     return Task.CompletedTask;
+}));
+
+tests.Add(("Matching accepts translated catalog titles, accents and all collaborators without losing versions", () =>
+{
+    var original = new Track("sp", "Shinzo wo Sasageyo !", "Linked Horizon", null, null, "Spotify", null, 341000);
+    var song = original with { Source = "YouTube Music", Id = "yt", Title = "心臓を捧げよ！ - Shinzo wo Sasageyo !", DurationMs = 342000 };
+    Check(PlaybackResolver.FindMatch(original, new[] { song }) == song, "Translated prefix rejected");
+    Check(PlaybackResolver.FindMatch(original, new[] { song with { Title = "心臓を捧げよ！ [TV Size] - Shinzo wo Sasageyo !" } }) == null, "Version suffix discarded");
+    original = original with { Title = "Vogel Im Kafig", Artist = "Sawano Hiroyuki", DurationMs = 380000 };
+    song = song with { Title = "Vogel im Käfig", Artist = "Hiroyuki Sawano", DurationMs = 380000 };
+    Check(PlaybackResolver.FindMatch(original, new[] { song }) == song, "Accents or artist name order rejected");
+    original = original with { Title = "Escapism.", Artist = "RAYE, 070 Shake", DurationMs = 271000 };
+    song = song with { Title = "Escapism.", Artist = "070 Shake, RAYE", DurationMs = 273000 };
+    Check(PlaybackResolver.FindMatch(original, new[] { song }) == song, "Collaborator order rejected");
+    Check(PlaybackResolver.FindMatch(original, new[] { song with { Artist = "RAYE" } }) == null, "Missing collaborator accepted");
+    return Task.CompletedTask;
+}));
+
+tests.Add(("YouTube metadata keeps multiple artists and excludes the album from artist names", () =>
+{
+    object Run(string text, string type) => new { text, navigationEndpoint = new { browseEndpoint = new { browseEndpointContextSupportedConfigs = new { browseEndpointContextMusicConfig = new { pageType = type } } } } };
+    using var doc = JsonDocument.Parse(JsonSerializer.Serialize(new { playlistItemData = new { videoId = "fixture" }, flexColumns = new object[] {
+        new { musicResponsiveListItemFlexColumnRenderer = new { text = new { runs = new object[] { new { text = "Escapism." } } } } },
+        new { musicResponsiveListItemFlexColumnRenderer = new { text = new { runs = new object[] { Run("RAYE", "MUSIC_PAGE_TYPE_ARTIST"), new { text = " & " }, Run("070 Shake", "MUSIC_PAGE_TYPE_ARTIST"), Run("Album", "MUSIC_PAGE_TYPE_ALBUM"), new { text = "4:33" } } } } }
+    } }));
+    var track = YouTubeMusic.ParseItem(doc.RootElement);
+    Check(track?.Artist == "RAYE, 070 Shake" && track.DurationMs == 273000, "Artist or duration parsing failed");
+    return Task.CompletedTask;
+}));
+
+tests.Add(("SoundCloud previews use full-duration metadata and never play the excerpt", async () =>
+{
+    var original = new Track("256195283", "She Looks So Perfect", "5 Seconds of Summer", null, null, "SoundCloud", null, 30000);
+    using var json = JsonDocument.Parse("""{"id":256195283,"duration":30000,"full_duration":202971,"policy":"SNIP"}""");
+    original = SoundCloud.ApplyMetadata(original, json.RootElement);
+    Check(original.IsPreview && original.DurationMs == 202971 && original.DurationText == "Preview", "Preview classified as full song");
+    var native = new PlaybackFake { Name = "SoundCloud" };
+    var youtube = new PlaybackFake { Results = new() { original with { Source = "YouTube Music", Id = "yt", IsPreview = false, DurationMs = 203000 } } };
+    var resolver = new PlaybackResolver(new Dictionary<string, IProvider> { ["SoundCloud"] = native, ["YouTube Music"] = youtube });
+    var result = await resolver.ResolveAsync(original, true);
+    Check(result.Source == "YouTube Music" && native.Resolves == 0, "Preview resolved as playable native audio");
+    await Fails(() => resolver.ResolveAsync(original, false), "preview");
+}));
+
+tests.Add(("Recent caches stay bounded, expire, and can be cleared on sign-out", () =>
+{
+    var cache = new RecentCache<int, string>(2, TimeSpan.FromMinutes(1));
+    cache.Set(1, "one"); cache.Set(2, "two"); cache.Set(3, "three");
+    Check(cache.Count == 2 && !cache.TryGet(1, out _) && cache.TryGet(3, out _), "Cache grew past bound");
+    cache.Clear(); Check(cache.Count == 0, "Sign-out cache clear failed");
+    cache = new(2, TimeSpan.Zero); cache.Set(1, "expired");
+    Check(!cache.TryGet(1, out _), "Expired provider address reused");
+    return Task.CompletedTask;
+}));
+
+tests.Add(("Downloaded songs persist locally and resolve without a network provider", async () =>
+{
+    var folder = Path.Combine(temp, "offline");
+    var source = Path.Combine(temp, "audio.m4a"); File.WriteAllBytes(source, new byte[] { 1, 2, 3, 4 });
+    var original = new Track("id", "A / song", "Artist", null, "temporary-token", "YouTube Music", null, 180000);
+    var offline = new OfflineLibrary(folder);
+    await offline.StoreAsync(original, "YouTube Music", source, CancellationToken.None);
+    var local = offline.Tracks().Single();
+    Check(local.Source == "Local" && local.Preview == null && File.Exists(local.OpenUri), "Offline file or metadata lost");
+    var resolver = new PlaybackResolver(new Dictionary<string, IProvider>(), offline);
+    Check((await resolver.ResolveAsync(original, false)).Location == local.OpenUri, "Offline playback needs provider");
+    var before = File.ReadAllText(Path.Combine(folder, "library.json"));
+    using var cancelled = new CancellationTokenSource(); cancelled.Cancel();
+    try { await offline.StoreAsync(original, "Other", source, cancelled.Token); throw new Exception("Cancellation ignored"); } catch (OperationCanceledException) { }
+    Check(File.ReadAllText(Path.Combine(folder, "library.json")) == before, "Cancelled save changed offline library");
+}));
+
+tests.Add(("Cancelled stream requests never start helper processes", async () =>
+{
+    using var cancellation = new CancellationTokenSource(); cancellation.Cancel();
+    try { await Dlp.StreamAsync("https://example.com", "cancelled", cancellation.Token); throw new Exception("Cancellation ignored"); } catch (OperationCanceledException) { }
+    try { await Dlp.RunAsync("--version", cancellation: cancellation.Token); throw new Exception("Cancellation ignored"); } catch (OperationCanceledException) { }
+}));
+
+tests.Add(("Spotify first-page songs are usable while later pages are still loading", async () =>
+{
+    bool firstPageShown = false;
+    var fake = new FakeHandler((_, call) =>
+    {
+        if (call == 2) Check(firstPageShown, "Waited for full playlist before showing songs");
+        return Task.FromResult(Json(JsonSerializer.Serialize(new { data = new { playlistV2 = new { content = new { totalCount = 100,
+            items = Enumerable.Range(0, 50).Select(i => new { itemV2 = new { data = WebTrack(i) } }) } } } })));
+    });
+    var tracks = await WebLibrary(fake).PlaylistPreviewAsync("0123456789ABCDEFGHIJKL", CancellationToken.None, first => { Check(first.Count == 50, "Wrong first-page count"); firstPageShown = true; });
+    Check(firstPageShown && tracks.Count == 100, "Final playlist incomplete");
 }));
 
 tests.Add(("Spotify matching never invokes Spotify playback and retains original metadata", async () =>

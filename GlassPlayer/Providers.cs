@@ -18,9 +18,9 @@ using System.Text.Json;
 
 namespace GlassPlayer;
 
-public record Track(string Id, string Title, string Artist, string? Art, string? Preview, string Source, string? OpenUri, int DurationMs = 0)
+public record Track(string Id, string Title, string Artist, string? Art, string? Preview, string Source, string? OpenUri, int DurationMs = 0, bool IsPreview = false, bool CatalogRecording = false)
 {
-    public string DurationText => DurationMs > 0 ? $"{DurationMs / 60000}:{DurationMs / 1000 % 60:00}" : "";
+    public string DurationText => IsPreview ? "Preview" : DurationMs > 0 ? $"{DurationMs / 60000}:{DurationMs / 1000 % 60:00}" : "";
 }
 
 public interface IProvider
@@ -30,6 +30,8 @@ public interface IProvider
     Task<List<Track>> SearchAsync(string query);
     /// <summary>Returns a URL the built-in player can stream, or null if the track must be opened elsewhere.</summary>
     Task<string?> ResolveAsync(Track t);
+    Task<List<Track>> SearchAsync(string query, CancellationToken cancellation) => SearchAsync(query).WaitAsync(cancellation);
+    Task<string?> ResolveAsync(Track t, CancellationToken cancellation) => ResolveAsync(t).WaitAsync(cancellation);
 }
 
 static class Config
@@ -56,7 +58,9 @@ static class Cache
     public static string? Find(string key)
     {
         if (!Directory.Exists(Dir)) return null;
-        return Directory.GetFiles(Dir, key + ".*").FirstOrDefault(f => !f.EndsWith(".part") && !f.EndsWith(".tmp") && !f.EndsWith(".ytdl"));
+        return Directory.GetFiles(Dir, key + ".*").FirstOrDefault(f =>
+            Path.GetExtension(f).ToLowerInvariant() is ".m4a" or ".mp3" or ".opus" or ".ogg" or ".webm" or ".mp4" or ".flac" or ".wav"
+            && new FileInfo(f).Length > 0);
     }
 
     public static string PathFor(string key, string ext)
@@ -80,6 +84,8 @@ static class Cache
 /// <summary>yt-dlp helper: downloaded once into %LocalAppData%\GlassPlayer\tools and refreshed every few days.</summary>
 static class Dlp
 {
+    static readonly RecentCache<string, string> Streams = new(32, TimeSpan.FromMinutes(3));
+    static readonly SemaphoreSlim StreamWorkers = new(1, 1);
     static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Lazy<Task<string>>> Downloads = new();
     static readonly HttpClient Http = new();
     static readonly string Dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GlassPlayer", "tools");
@@ -88,51 +94,90 @@ static class Dlp
     static readonly SemaphoreSlim SetupGate = new(1, 1);
     static bool ready;
 
-    public static async Task EnsureAsync()
+    public static async Task EnsureAsync(CancellationToken cancellation = default)
     {
-        await SetupGate.WaitAsync();
+        await SetupGate.WaitAsync(cancellation);
         try
         {
             if (ready) return;
             Directory.CreateDirectory(Dir);
             if (!File.Exists(Exe))
             {
-                var bytes = await Http.GetByteArrayAsync("https://github.com/yt-dlp/yt-dlp/releases/latest/download/" + Asset);
-                await File.WriteAllBytesAsync(Exe + ".download", bytes);
+                using var response = await Http.GetAsync("https://github.com/yt-dlp/yt-dlp/releases/latest/download/" + Asset, HttpCompletionOption.ResponseHeadersRead, cancellation);
+                response.EnsureSuccessStatusCode();
+                await using (var input = await response.Content.ReadAsStreamAsync(cancellation))
+                await using (var output = File.Create(Exe + ".download")) await input.CopyToAsync(output, cancellation);
+                cancellation.ThrowIfCancellationRequested();
                 File.Move(Exe + ".download", Exe, true);
             }
             else if ((DateTime.UtcNow - File.GetLastWriteTimeUtc(Exe)).TotalDays > 5)
             {
-                try { await RunAsync("-U"); File.SetLastWriteTimeUtc(Exe, DateTime.UtcNow); } catch { }
+                try { await RunAsync("-U", cancellation: cancellation, timeout: TimeSpan.FromSeconds(6)); File.SetLastWriteTimeUtc(Exe, DateTime.UtcNow); }
+                catch when (!cancellation.IsCancellationRequested) { }
             }
             ready = true;
         }
         finally { SetupGate.Release(); }
     }
 
-    public static async Task<string> RunAsync(string args, bool allowPartial = false)
+    public static async Task<string> RunAsync(string args, bool allowPartial = false, CancellationToken cancellation = default, TimeSpan? timeout = null)
     {
         var psi = new ProcessStartInfo(Exe, args)
         {
             RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false,
             CreateNoWindow = true, StandardOutputEncoding = Encoding.UTF8
         };
+        cancellation.ThrowIfCancellationRequested();
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+        deadline.CancelAfter(timeout ?? TimeSpan.FromSeconds(60));
         using var proc = Process.Start(psi)!;
         var err = proc.StandardError.ReadToEndAsync();
-        var output = await proc.StandardOutput.ReadToEndAsync();
-        await proc.WaitForExitAsync();
+        var stdout = proc.StandardOutput.ReadToEndAsync();
+        try { await proc.WaitForExitAsync(deadline.Token); }
+        catch (OperationCanceledException)
+        {
+            try { if (!proc.HasExited) proc.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
+            await proc.WaitForExitAsync();
+            await Task.WhenAll(err, stdout);
+            if (cancellation.IsCancellationRequested) throw;
+            throw new TimeoutException("The audio source took too long to respond. Try this song again.");
+        }
+        var output = await stdout;
+        var error = await err;
         if (proc.ExitCode != 0 && !(allowPartial && output.Length > 0))
         {
-            var line = ((await err).Split('\n').LastOrDefault(l => l.Contains("ERROR")) ?? "").Trim();
+            var line = (error.Split('\n').LastOrDefault(l => l.Contains("ERROR")) ?? "").Trim();
+            line = Regex.Replace(line, @"https?://\S+", "<audio source>");
             if (line.Length > 160) line = line[..160];
             throw new Exception(line.Length > 0 ? line : "Couldn't load this track. Try another one.");
         }
         return output;
     }
 
+    public static async Task<string> StreamAsync(string url, string key, CancellationToken cancellation = default)
+    {
+        cancellation.ThrowIfCancellationRequested();
+        if (Cache.Find(key) is { } file) return file;
+        if (Streams.TryGet(key, out var hit)) return hit;
+        await StreamWorkers.WaitAsync(cancellation);
+        try
+        {
+            if (Streams.TryGet(key, out hit)) return hit;
+            await EnsureAsync(cancellation);
+            var output = await RunAsync($"--no-playlist --no-warnings --socket-timeout 8 --retries 0 --extractor-retries 0 -f \"bestaudio[ext=m4a]/bestaudio/18/best\" --get-url -- \"{url.Replace("\"", "")}\"", cancellation: cancellation, timeout: TimeSpan.FromSeconds(20));
+            var lines = output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (lines.Length != 1 || !Uri.TryCreate(lines[0], UriKind.Absolute, out var uri) || uri.Scheme != "https")
+                throw new InvalidDataException("The source did not return a playable audio stream.");
+            cancellation.ThrowIfCancellationRequested();
+            Streams.Set(key, lines[0]);
+            return lines[0];
+        }
+        finally { StreamWorkers.Release(); }
+    }
+
     /// <summary>Downloads the audio of a page to the cache and returns the local file path.</summary>
-    public static Task<string> DownloadAsync(string url, string key)
-        => ShareDownloadAsync(key, () => DownloadCoreAsync(url, key));
+    public static Task<string> DownloadAsync(string url, string key, CancellationToken cancellation = default)
+        => ShareDownloadAsync(key, () => DownloadCoreAsync(url, key, cancellation)).WaitAsync(cancellation);
 
     internal static async Task<string> ShareDownloadAsync(string key, Func<Task<string>> download)
     {
@@ -142,13 +187,13 @@ static class Dlp
         finally { Downloads.TryRemove(new KeyValuePair<string, Lazy<Task<string>>>(key, pending)); }
     }
 
-    static async Task<string> DownloadCoreAsync(string url, string key)
+    static async Task<string> DownloadCoreAsync(string url, string key, CancellationToken cancellation)
     {
         var hit = Cache.Find(key);
         if (hit != null) return hit;
-        await EnsureAsync();
+        await EnsureAsync(cancellation);
         Directory.CreateDirectory(Cache.Dir);
-        await RunAsync($"-f \"bestaudio[ext=m4a]/bestaudio/18/best\" --no-playlist --no-warnings -q --no-progress -o \"{Path.Combine(Cache.Dir, key)}.%(ext)s\" \"{url}\"");
+        await RunAsync($"-f \"bestaudio[ext=m4a]/bestaudio/18/best\" --socket-timeout 10 --retries 1 --no-playlist --no-warnings -q --no-progress -o \"{Path.Combine(Cache.Dir, key)}.%(ext)s\" -- \"{url.Replace("\"", "")}\"", cancellation: cancellation, timeout: TimeSpan.FromMinutes(5));
         return Cache.Find(key) ?? throw new Exception("Couldn't download this track.");
     }
 }
@@ -159,47 +204,53 @@ class SoundCloud : IProvider
     static readonly HttpClient Http = Make();
     static HttpClient Make()
     {
-        var h = new HttpClient();
+        var h = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
         h.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36");
         return h;
     }
 
     string? clientId;
+    readonly RecentCache<string, Track> metadata = new(64, TimeSpan.FromMinutes(20));
     public string Name => "SoundCloud";
     public bool Enabled => true;
 
-    async Task<string> ClientIdAsync(bool refresh = false)
+    async Task<string> ClientIdAsync(bool refresh = false, CancellationToken cancellation = default)
     {
         if (clientId != null && !refresh) return clientId;
-        var html = await Http.GetStringAsync("https://soundcloud.com");
+        var html = await Http.GetStringAsync("https://soundcloud.com", cancellation);
         var scripts = Regex.Matches(html, "<script[^>]+src=\"(https://[^\"]+\\.js)\"").Select(m => m.Groups[1].Value).Reverse().ToList();
         foreach (var url in scripts)
         {
             try
             {
-                var js = await Http.GetStringAsync(url);
+                cancellation.ThrowIfCancellationRequested();
+                var js = await Http.GetStringAsync(url, cancellation);
                 var m = Regex.Match(js, "client_id\\s*[:=]\\s*\"([A-Za-z0-9]{32})\"");
                 if (m.Success) return clientId = m.Groups[1].Value;
             }
-            catch { }
+            catch when (!cancellation.IsCancellationRequested) { }
         }
         throw new Exception("Couldn't reach SoundCloud.");
     }
 
-    public async Task<List<Track>> SearchAsync(string q)
+    public Task<List<Track>> SearchAsync(string q) => SearchAsync(q, CancellationToken.None);
+    public async Task<List<Track>> SearchAsync(string q, CancellationToken cancellation)
     {
         List<Track> list = new();
-        try { list = await ApiSearchAsync(q); } catch { }
-        if (list.Count == 0) list = await DlpSearchAsync(q); // fallback if the web API changes
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+        deadline.CancelAfter(TimeSpan.FromSeconds(10));
+        try { list = await ApiSearchAsync(q, deadline.Token); } catch when (!cancellation.IsCancellationRequested) { }
+        cancellation.ThrowIfCancellationRequested();
+        if (list.Count == 0) list = await DlpSearchAsync(q, cancellation);
         return list;
     }
 
-    async Task<List<Track>> ApiSearchAsync(string q)
+    async Task<List<Track>> ApiSearchAsync(string q, CancellationToken cancellation)
     {
         for (int attempt = 0; ; attempt++)
         {
-            var cid = await ClientIdAsync(attempt > 0);
-            var res = await Http.GetAsync($"https://api-v2.soundcloud.com/search/tracks?q={Uri.EscapeDataString(q)}&client_id={cid}&limit=30");
+            var cid = await ClientIdAsync(attempt > 0, cancellation);
+            using var res = await Http.GetAsync($"https://api-v2.soundcloud.com/search/tracks?q={Uri.EscapeDataString(q)}&client_id={cid}&limit=30", cancellation);
             if (attempt == 0 && !res.IsSuccessStatusCode) continue;
             res.EnsureSuccessStatusCode();
             using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
@@ -208,7 +259,7 @@ class SoundCloud : IProvider
             {
                 try
                 {
-                    if (t.TryGetProperty("policy", out var pol) && pol.GetString() is "SNIP" or "BLOCK") continue; // previews / blocked
+                    bool restricted = t.TryGetProperty("policy", out var pol) && pol.GetString() is "SNIP" or "BLOCK";
                     string? progressive = null;
                     if (t.TryGetProperty("media", out var media) && media.TryGetProperty("transcodings", out var tr))
                         foreach (var x in tr.EnumerateArray())
@@ -221,7 +272,7 @@ class SoundCloud : IProvider
                     list.Add(new Track(t.GetProperty("id").GetRawText(), t.GetProperty("title").GetString() ?? "",
                         t.GetProperty("user").GetProperty("username").GetString() ?? "", art,
                         progressive != null ? progressive + "|" + auth : "", Name, page,
-                        t.TryGetProperty("duration", out var du) && du.TryGetInt32(out var dms) ? dms : 0));
+                        t.TryGetProperty("full_duration", out var full) && full.TryGetInt32(out var fullMs) ? fullMs : t.TryGetProperty("duration", out var du) && du.TryGetInt32(out var dms) ? dms : 0, restricted));
                 }
                 catch { }
             }
@@ -229,10 +280,10 @@ class SoundCloud : IProvider
         }
     }
 
-    async Task<List<Track>> DlpSearchAsync(string q)
+    async Task<List<Track>> DlpSearchAsync(string q, CancellationToken cancellation)
     {
-        await Dlp.EnsureAsync();
-        var output = await Dlp.RunAsync($"-j --no-warnings \"scsearch10:{q.Replace("\"", "")}\"");
+        await Dlp.EnsureAsync(cancellation);
+        var output = await Dlp.RunAsync($"--flat-playlist -j --no-warnings --socket-timeout 8 --retries 0 -- \"scsearch10:{q.Replace("\"", "")}\"", cancellation: cancellation, timeout: TimeSpan.FromSeconds(20));
         var list = new List<Track>();
         foreach (var line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
         {
@@ -249,9 +300,10 @@ class SoundCloud : IProvider
         return list;
     }
 
-    // Returns a local file path (downloaded into the cache) so playback is rock solid.
-    public async Task<string?> ResolveAsync(Track t)
+    public Task<string?> ResolveAsync(Track t) => ResolveAsync(t, CancellationToken.None);
+    public async Task<string?> ResolveAsync(Track t, CancellationToken cancellation)
     {
+        if (t.IsPreview) throw new InvalidOperationException("SoundCloud only provides a preview of this recording. Trying a full-length match.");
         var key = "sc" + t.Id;
         var hit = Cache.Find(key);
         if (hit != null) return hit;
@@ -260,39 +312,66 @@ class SoundCloud : IProvider
             try
             {
                 var parts = t.Preview.Split('|');
-                var cid = await ClientIdAsync();
-                using var doc = JsonDocument.Parse(await Http.GetStringAsync($"{parts[0]}?client_id={cid}&track_authorization={parts[1]}"));
+                var cid = await ClientIdAsync(cancellation: cancellation);
+                using var doc = JsonDocument.Parse(await Http.GetStringAsync($"{parts[0]}?client_id={cid}&track_authorization={parts[1]}", cancellation));
                 var media = doc.RootElement.GetProperty("url").GetString()!;
-                var path = Cache.PathFor(key, "mp3");
-                using (var s = await Http.GetStreamAsync(media))
-                using (var f = File.Create(path + ".tmp"))
-                    await s.CopyToAsync(f);
-                File.Move(path + ".tmp", path, true);
-                return path;
+                if (Uri.TryCreate(media, UriKind.Absolute, out var uri) && uri.Scheme == "https") return media;
             }
-            catch { }
+            catch when (!cancellation.IsCancellationRequested) { }
         }
-        if (t.OpenUri != null) return await Dlp.DownloadAsync(t.OpenUri, key);
+        cancellation.ThrowIfCancellationRequested();
+        if (t.OpenUri != null) return await Dlp.StreamAsync(t.OpenUri, key, cancellation);
         return null;
+    }
+
+    internal async Task<Track> RefreshPreviewAsync(Track track, CancellationToken cancellation)
+    {
+        if (metadata.TryGet(track.Id, out var cached)) return cached;
+        if (track.OpenUri == null) throw new InvalidOperationException("This saved track may be a preview. Find a full recording on YouTube.");
+        var uri = new Uri(track.OpenUri);
+        if (uri.Scheme != "https" || uri.Host != "soundcloud.com") throw new InvalidDataException("Invalid SoundCloud track link.");
+        var html = await Http.GetStringAsync(uri, cancellation);
+        var match = Regex.Match(html, @"window\.__sc_hydration\s*=\s*(\[.*?\]);", RegexOptions.Singleline);
+        if (!match.Success) throw new InvalidOperationException("Couldn't check whether this SoundCloud track is a preview. Find a full recording on YouTube.");
+        using var doc = JsonDocument.Parse(match.Groups[1].Value);
+        var data = doc.RootElement.EnumerateArray().FirstOrDefault(e => SpotifyWebLibrary.At(e, "hydratable").ToString() == "sound");
+        var result = ApplyMetadata(track, SpotifyWebLibrary.At(data, "data"));
+        metadata.Set(track.Id, result);
+        return result;
+    }
+
+    internal static Track ApplyMetadata(Track track, JsonElement data)
+    {
+        if (SpotifyWebLibrary.At(data, "id").ToString() != track.Id) throw new InvalidDataException("SoundCloud returned a different recording.");
+        var full = SpotifyWebLibrary.At(data, "full_duration");
+        int duration = full.ValueKind == JsonValueKind.Number && full.TryGetInt32(out var ms) ? ms : track.DurationMs;
+        bool preview = SpotifyWebLibrary.At(data, "policy").ToString() is "SNIP" or "BLOCK";
+        return track with { DurationMs = duration, IsPreview = preview };
     }
 }
 
 /// <summary>YouTube Music without any API key: public web search, yt-dlp for the audio.</summary>
 class YouTubeMusic : IProvider
 {
-    static readonly HttpClient Http = new();
+    static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(8) };
+    readonly RecentCache<string, List<Track>> searches = new(16, TimeSpan.FromMinutes(10));
     public string Name => "YouTube Music";
     public bool Enabled => true;
 
-    public async Task<List<Track>> SearchAsync(string q)
+    public Task<List<Track>> SearchAsync(string q) => SearchAsync(q, CancellationToken.None);
+    public async Task<List<Track>> SearchAsync(string q, CancellationToken cancellation)
     {
+        cancellation.ThrowIfCancellationRequested();
+        if (searches.TryGet(q, out var cached)) return new(cached);
         var list = new List<Track>();
-        try { list = await InnerTubeSearchAsync(q); } catch { }
-        if (list.Count == 0) list = await DlpSearchAsync(q);
+        try { list = await InnerTubeSearchAsync(q, cancellation); } catch when (!cancellation.IsCancellationRequested) { }
+        cancellation.ThrowIfCancellationRequested();
+        if (list.Count == 0) list = await DlpSearchAsync(q, cancellation);
+        if (list.Count > 0) searches.Set(q, list);
         return list;
     }
 
-    static async Task<List<Track>> InnerTubeSearchAsync(string q)
+    static async Task<List<Track>> InnerTubeSearchAsync(string q, CancellationToken cancellation)
     {
         var body = JsonSerializer.Serialize(new
         {
@@ -300,12 +379,12 @@ class YouTubeMusic : IProvider
             query = q,
             @params = "EgWKAQIIAWoMEA4QChADEAQQCRAF" // songs only
         });
-        var req = new HttpRequestMessage(HttpMethod.Post, "https://music.youtube.com/youtubei/v1/search?prettyPrint=false")
+        using var req = new HttpRequestMessage(HttpMethod.Post, "https://music.youtube.com/youtubei/v1/search?prettyPrint=false")
         { Content = new StringContent(body, Encoding.UTF8, "application/json") };
         req.Headers.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0");
         req.Headers.Add("Origin", "https://music.youtube.com");
         req.Headers.Add("Referer", "https://music.youtube.com/");
-        var res = await Http.SendAsync(req);
+        using var res = await Http.SendAsync(req, cancellation);
         res.EnsureSuccessStatusCode();
         using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
         var list = new List<Track>();
@@ -329,7 +408,7 @@ class YouTubeMusic : IProvider
             foreach (var x in e.EnumerateArray()) Walk(x, list);
     }
 
-    static Track? ParseItem(JsonElement r)
+    internal static Track? ParseItem(JsonElement r)
     {
         try
         {
@@ -337,7 +416,8 @@ class YouTubeMusic : IProvider
             if (id == null) return null;
             var cols = r.GetProperty("flexColumns");
             var title = cols[0].GetProperty("musicResponsiveListItemFlexColumnRenderer").GetProperty("text").GetProperty("runs")[0].GetProperty("text").GetString() ?? "";
-            var texts = cols[1].GetProperty("musicResponsiveListItemFlexColumnRenderer").GetProperty("text").GetProperty("runs").EnumerateArray()
+            var runs = cols[1].GetProperty("musicResponsiveListItemFlexColumnRenderer").GetProperty("text").GetProperty("runs");
+            var texts = runs.EnumerateArray()
                 .Select(x => x.GetProperty("text").GetString() ?? "").Where(s => s.Trim() != "•" && s != "Song" && s != "Video").ToList();
             string? art = null;
             if (r.TryGetProperty("thumbnail", out var th))
@@ -349,16 +429,19 @@ class YouTubeMusic : IProvider
             static bool IsDur(string s) => Regex.IsMatch(s.Trim(), "^\\d+(:\\d{2}){1,2}$");
             var dur = texts.LastOrDefault(IsDur);
             int ms = dur == null ? 0 : dur.Trim().Split(':').Select(int.Parse).Aggregate(0, (acc, s) => acc * 60 + s) * 1000;
-            var artist = texts.FirstOrDefault(s => !IsDur(s)) ?? "";
-            return new Track(id, title, artist, art, null, "YouTube Music", null, ms);
+            var artists = runs.EnumerateArray().Where(x => SpotifyWebLibrary.At(x, "navigationEndpoint", "browseEndpoint",
+                "browseEndpointContextSupportedConfigs", "browseEndpointContextMusicConfig", "pageType").ToString() == "MUSIC_PAGE_TYPE_ARTIST")
+                .Select(x => x.GetProperty("text").GetString()).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct().ToArray();
+            var artist = artists.Length > 0 ? string.Join(", ", artists) : texts.FirstOrDefault(s => !IsDur(s)) ?? "";
+            return new Track(id, title, artist, art, null, "YouTube Music", null, ms, CatalogRecording: artists.Length > 0);
         }
         catch { return null; }
     }
 
-    static async Task<List<Track>> DlpSearchAsync(string q)
+    static async Task<List<Track>> DlpSearchAsync(string q, CancellationToken cancellation)
     {
-        await Dlp.EnsureAsync();
-        var output = await Dlp.RunAsync($"--flat-playlist -j --no-warnings \"ytsearch12:{q.Replace("\"", "")}\"");
+        await Dlp.EnsureAsync(cancellation);
+        var output = await Dlp.RunAsync($"--flat-playlist -j --no-warnings --socket-timeout 8 --retries 0 -- \"ytsearch12:{q.Replace("\"", "")}\"", cancellation: cancellation, timeout: TimeSpan.FromSeconds(20));
         var list = new List<Track>();
         foreach (var line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
         {
@@ -379,9 +462,10 @@ class YouTubeMusic : IProvider
         return list;
     }
 
-    // Downloads the audio to the cache and returns the local file path.
     public Task<string?> ResolveAsync(Track t)
-        => Dlp.DownloadAsync($"https://music.youtube.com/watch?v={t.Id}", "yt" + t.Id).ContinueWith(x => (string?)x.Result);
+        => ResolveAsync(t, CancellationToken.None);
+    public async Task<string?> ResolveAsync(Track t, CancellationToken cancellation)
+        => await Dlp.StreamAsync($"https://music.youtube.com/watch?v={t.Id}", "yt" + t.Id, cancellation);
 }
 
 /// <summary>Songs imported from files on this PC.</summary>

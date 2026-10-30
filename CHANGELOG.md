@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.1 — 2026-10-29
+
+- Stream audio instead of downloading the full song before playback; cancel abandoned helper processes and bound network waits.
+- Recognize translated titles, accents and complete artist lists for Spotify matching; accept identical YouTube Music catalog copies while retaining version and duration checks.
+- Detect SoundCloud previews, recover full-duration metadata for older 30-second imports, and seek a full-length match instead of playing excerpts.
+- Clear stale search results on provider changes and add Playlists, Downloads and Refresh navigation.
+- Show Spotify's first page before the full playlist finishes; keep only three small recent playlists briefly in memory.
+- Save optional offline audio and cover art to Music\GlassPlayer; replay downloaded songs without a network resolver.
+- Bound artwork decoding and caches, stop inactive scroll callbacks, and redact audio stream addresses from logs.
+
+
 ## 0.3.0 — 2026-10-29
 
 - Normal ARM64/x64 installers upgrade the existing application while preserving per-user settings and saved libraries. No personal account data is included in the shared download.
