@@ -263,6 +263,9 @@ class Spotify : IProvider
         return list;
     }
 
+    public Task<List<Track>> PlaylistPreviewAsync(string id, CancellationToken cancellation, Action<List<Track>> firstPage)
+        => Library != null ? Library.PlaylistPreviewAsync(id, cancellation, firstPage) : PlaylistAsync(id, cancellation);
+
     public async Task<List<Track>> PlaylistAsync(string id, CancellationToken cancellation = default)
     {
         if (Library != null) return await Library.PlaylistAsync(id, cancellation);

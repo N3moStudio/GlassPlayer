@@ -63,7 +63,8 @@ class AudioEngine : IDisposable
         {
             var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GlassPlayer");
             Directory.CreateDirectory(dir);
-            File.AppendAllText(Path.Combine(dir, "audio.log"), $"{DateTime.Now:HH:mm:ss} {msg}\n");
+            var clean = System.Text.RegularExpressions.Regex.Replace(msg, @"https?://\S+", "<audio source>");
+            File.AppendAllText(Path.Combine(dir, "audio.log"), $"{DateTime.Now:HH:mm:ss} {clean}\n");
         }
         catch { }
     }

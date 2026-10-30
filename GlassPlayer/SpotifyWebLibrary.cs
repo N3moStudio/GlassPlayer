@@ -31,7 +31,7 @@ sealed class SpotifyWebLibrary
         for (int attempt = 0; ; attempt++)
         {
             cancellation.ThrowIfCancellationRequested();
-            var auth = await credentials();
+            var auth = await credentials().WaitAsync(cancellation);
             using var request = new HttpRequestMessage(HttpMethod.Post, "https://api-partner.spotify.com/pathfinder/v2/query");
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", auth.Access);
             request.Headers.TryAddWithoutValidation("client-token", auth.ClientToken);
@@ -102,7 +102,10 @@ sealed class SpotifyWebLibrary
         return result;
     }
 
-    public async Task<List<Track>> PlaylistAsync(string id, CancellationToken cancellation = default)
+    public Task<List<Track>> PlaylistAsync(string id, CancellationToken cancellation = default)
+        => PlaylistPreviewAsync(id, cancellation, null);
+
+    public async Task<List<Track>> PlaylistPreviewAsync(string id, CancellationToken cancellation, Action<List<Track>>? firstPage)
     {
         bool liked = id == "liked";
         if (!liked) SpotifyDesktop.ValidateUri("spotify:playlist:" + id);
@@ -122,6 +125,7 @@ sealed class SpotifyWebLibrary
             }
             offset += items.GetArrayLength();
             if (Complete(page, items, offset, 50)) break;
+            if (offset == items.GetArrayLength()) firstPage?.Invoke(new(result));
             if (offset > 100000) throw new InvalidOperationException("Spotify returned an unexpectedly large playlist.");
         }
         return result;

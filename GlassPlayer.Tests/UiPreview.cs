@@ -73,6 +73,30 @@ static class UiPreview
                 if (((Track)Field(window, "nowPlaying")!).Id != "first") throw new Exception("Browsing replaced the playback queue");
                 fake.Pending[2].SetResult(null);
                 Drain();
+                Element<TextBox>("SearchBox").Text = "previous provider query";
+                Element<RadioButton>("YouTubeBtn").IsChecked = true;
+                Drain();
+                if (Element<TextBox>("SearchBox").Text.Length != 0 || list.ItemsSource is IEnumerable<Track>)
+                    throw new Exception("Provider switch retained stale search tracks");
+                Element<TextBox>("SearchBox").Text = "another query";
+                typeof(MainWindow).GetMethod("SavedImports_Click", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, new object[] { window, new RoutedEventArgs() });
+                if (Element<TextBox>("SearchBox").Text.Length != 0 || list.ItemsSource is IEnumerable<Track>)
+                    throw new Exception("Playlists did not clear search and return home");
+                var delayedSearch = new TaskCompletionSource<List<Track>>();
+                youtube.SearchCompletion = delayedSearch;
+                Element<TextBox>("SearchBox").Text = "delayed";
+                var searchTask = (Task)typeof(MainWindow).GetMethod("SearchAsync", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, null)!;
+                Element<RadioButton>("SoundCloudBtn").IsChecked = true;
+                delayedSearch.SetResult(new() { tracks[0] });
+                Drain();
+                if (list.ItemsSource is IEnumerable<Track>) throw new Exception("Old provider search replaced the new provider home");
+                var fixtureImagePath = Path.GetFullPath(Path.Combine(directory, "large-art.png"));
+                var largeBitmap = BitmapSource.Create(2048, 2048, 96, 96, PixelFormats.Bgra32, null, new byte[2048 * 2048 * 4], 2048 * 4);
+                var fixtureEncoder = new PngBitmapEncoder(); fixtureEncoder.Frames.Add(BitmapFrame.Create(largeBitmap));
+                using (var fixtureStream = File.Create(fixtureImagePath)) fixtureEncoder.Save(fixtureStream);
+                var thumb = (BitmapImage?)new ArtworkConverter().Convert(fixtureImagePath, typeof(ImageSource), null!, System.Globalization.CultureInfo.InvariantCulture);
+                if (thumb?.PixelWidth != 96 || ArtworkConverter.Create(fixtureImagePath, 512)?.PixelWidth != 512)
+                    throw new Exception("Artwork decoded at unbounded original resolution");
                 list.SelectedIndex = -1;
                 list.ItemsSource = Enumerable.Range(1, 8).Select(i => new Track(i.ToString(), "Track " + i, "Artist name", null, null, "SoundCloud", null, 185000)).ToList();
                 Element<TextBlock>("TitleText").Text = "Your music, in glass";
@@ -132,7 +156,8 @@ sealed class DeferredProvider : IProvider
     public bool Enabled => true;
     public List<TaskCompletionSource<string?>> Pending { get; } = new();
     public List<Track> Results { get; set; } = new();
-    public Task<List<Track>> SearchAsync(string query) => Task.FromResult(Results);
+    public TaskCompletionSource<List<Track>>? SearchCompletion { get; set; }
+    public Task<List<Track>> SearchAsync(string query) => SearchCompletion?.Task ?? Task.FromResult(Results);
     public Task<string?> ResolveAsync(Track track)
     {
         var result = new TaskCompletionSource<string?>();

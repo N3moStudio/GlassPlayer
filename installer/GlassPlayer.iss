@@ -1,6 +1,6 @@
 ; Community fork installer. Copyright (c) 2026 N3moStudio. GPL-3.0-only.
 #ifndef AppVersion
-  #define AppVersion "0.3.0"
+  #define AppVersion "0.3.1"
 #endif
 #ifndef Arch
   #define Arch "arm64"
@@ -46,7 +46,7 @@ AppMutex=Local\N3moStudio.GlassPlayer
 CloseApplications=yes
 RestartApplications=no
 ChangesAssociations=no
-VersionInfoVersion=0.3.0.0
+VersionInfoVersion=0.3.1.0
 VersionInfoProductName=GlassPlayer
 VersionInfoDescription=GlassPlayer Setup ({#Arch})
 

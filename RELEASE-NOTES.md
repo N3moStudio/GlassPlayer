@@ -1,24 +1,24 @@
-GlassPlayer **0.3.0** plays Spotify playlist entries through carefully matched YouTube audio, keeps Spotify closed, and adds clear window transparency.
+GlassPlayer **0.3.1** fixes slow song starts, Spotify matching failures, SoundCloud preview playback and confusing library navigation.
 
-Download the **ARM64 setup.exe** for Snapdragon/Windows ARM or the **x64 setup.exe** for Intel/AMD. Setup upgrades the existing installation and keeps your saved library and settings. Portable ZIPs are optional.
+Download the **ARM64 setup.exe** for Snapdragon/Windows ARM or **x64 setup.exe** for Intel/AMD. Setup upgrades the existing app and preserves settings, sign-in and saved playlists. Each user connects their own account through **Settings → Connect library → Spotify → Sync playlists**. Downloads contain no personal account data.
 
-Each user connects their own account: **Settings → Connect library → Spotify → Sync playlists**. Sync saves names, covers, track order and Liked Songs locally. Run it again to refresh Spotify changes. No personal account, session, playlist library or audio cache is bundled with the downloads.
+## Playback fixes
 
-## Changes
+- Audio streams after resolution instead of waiting for a complete download. Switching tracks cancels abandoned helper processes, with bounded timeouts and small stream caches.
+- Spotify matching now handles translated title prefixes, accents, artist-name order and multiple artists. Identical YouTube Music catalog copies can play; covers, version differences and conflicting durations remain guarded.
+- SoundCloud previews are not treated as full songs. Older 30-second imports retrieve the full recording duration for YouTube matching. Some SoundCloud songs still play natively in full; availability is checked per recording.
 
-- Search SoundCloud or import public playlists and local files without the Spotify app. Save lists to return to them later with their order, names and artwork links.
-- Keep the original playlist title and cover separately from song artwork. Separate playlists with identical songs retain their own names and covers.
-- Silence clearly detected Spotify ads in optional desktop-controls mode. Music resumes after the ad break; the feature does not skip ads or work with Spotify closed.
-- Play Spotify playlist entries and unavailable SoundCloud recordings through matching YouTube Music audio. Automatic matches require title, artist and duration agreement; ambiguous matches need a manual choice. Original metadata stays intact and the actual source is shown beneath the artist. Disable matching in Settings to keep Spotify entries as references.
-- Save Spotify playlists with their original titles and covers. Search YouTube Music directly or use **Find on YouTube** for a selected song. Selecting songs never launches Spotify or clicks its controls.
-- Sync the connected account's playlist metadata with one atomic save. Cancellation or a failed request preserves the existing library. This manual refresh does not change Spotify or synchronize multiple computers.
-- Adjust **Settings → Glass tint** to reveal more of the desktop while artwork and controls stay opaque. This is clear transparency, without desktop blur. Ambient glow is subtler, and volume stays visible at the minimum window size.
-- Imports no longer stop at 100 tracks. Track selection ignores stale loading results, and next/previous stay with the playing list while you browse elsewhere.
+## Navigation and offline listening
 
-## Limits and validation
+- Switching tabs clears the previous source's search. **Playlists** returns to the saved collection, and catalog search can find songs outside your playlists.
+- Spotify shows the first page while the rest loads. A small recent-playlist cache speeds up revisits; **Refresh** checks for changes.
+- **Download** saves available, unprotected audio under **Music\GlassPlayer**, with original metadata and optional cover art. Click again to cancel. **Downloads** provides local browsing/search, and original playlist entries prefer their saved file on replay. Matched downloads use the displayed YouTube audio source.
 
-Spotify Free itself still does not supply standalone audio; the audio source for Spotify entries is YouTube Music. These unofficial providers can change, and metadata matching cannot guarantee identical recordings or availability. **Show Spotify** is an optional desktop-control mode that requires Spotify to stay running. SoundCloud restrictions remain; matching does not decrypt protected SoundCloud tracks. Playlist transfers match recordings rather than copying Spotify audio; GlassPlayer does not transfer accounts itself.
+## Resource use and validation
 
-Account-free tests cover matching, ambiguity, cancellation, atomic library sync, original metadata, saved playlists, ad classification/mute restoration and offscreen layouts. A real MONTERO fallback passed muted native VLC decode, pause, seek and resume checks without opening Spotify or controlling the desktop. Real-ad detection, other users' account sign-ins, audible listening quality, live transparency, resizing and long-duration use remain unverified. GlassPlayer adds no display ads; permanently ad-free provider behavior is not guaranteed.
+Artwork is decoded at 96 pixels for thumbnails and 512 pixels for the player. Caches have fixed limits, disabled glow releases its image, and scrolling stops rendering when it reaches the end. These changes reduce avoidable work; no universal RAM percentage is claimed.
 
-This community fork preserves [Jonzu00's original work](https://github.com/Jonzu00/GlassPlayer), credits and GPL-3.0 licensing. See README, changelog and third-party notices.
+51 account-free checks cover matching, previews, offline persistence, cancellation, metadata, bounded caches and offscreen navigation/layout. Live muted native playback checks passed for Shinzo wo Sasageyo!, Escapism. and the full-length She Looks So Perfect match, with resolution around four seconds on the test connection. A downloaded copy also played past 30 seconds without a network provider, then paused, sought and resumed; cover art saved successfully. Results do not establish every recording, other users' sign-ins, audible quality or long-duration stability.
+
+SoundCloud and YouTube connections remain unofficial and can change. Matching is metadata-based, not proof of identical audio. Protected recordings and account/region restrictions are not unlocked. Permanently ad-free provider behavior is not guaranteed. This community fork preserves [Jonzu00's original work](https://github.com/Jonzu00/GlassPlayer), credits and GPL-3.0 licensing.
+
